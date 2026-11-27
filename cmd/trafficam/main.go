@@ -16,7 +16,8 @@
 //	-blocklist FILE   known-bad snapshot: matches always alert
 //	-watch FILE       your "alert me anyway" list
 //	-ignore FILE      your "ignore" list
-//	-asn FILE         offline CIDR -> ASN,country table
+//	-asn FILE         offline CIDR -> ASN,country table (default: asn.csv.gz or
+//	                  asn.csv in the data folder, if there is one)
 package main
 
 import (
@@ -70,7 +71,7 @@ func main() {
 	fs.StringVar(&lf.blocklist, "blocklist", "", "known-bad snapshot file (opt-in)")
 	fs.StringVar(&lf.watch, "watch", "", "your alert-anyway list")
 	fs.StringVar(&lf.ignore, "ignore", "", "your ignore list")
-	fs.StringVar(&lf.asn, "asn", "", "offline ASN/country table (CSV)")
+	fs.StringVar(&lf.asn, "asn", "", "offline ASN/country table (CSV or .csv.gz; default: asn.csv.gz or asn.csv in the data folder)")
 	fs.StringVar(&lf.prior, "prior", "", "head C prior-risk weights (TCW1 file); empty = head C off")
 	fs.Parse(args)
 
@@ -155,6 +156,19 @@ func loadList(path string) (*blocklist.List, error) {
 	return blocklist.Load(path)
 }
 
+// findASNTable returns the ASN/country table in the data folder (where a
+// knowledge pack puts it), or "" if there is none. Without one, rows simply
+// have no ASN or country.
+func findASNTable(dir string) string {
+	for _, name := range []string{"asn.csv.gz", "asn.csv"} {
+		p := filepath.Join(dir, name)
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			return p
+		}
+	}
+	return ""
+}
+
 func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, lf listFiles) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	st, err := openStore(dir)
@@ -170,11 +184,15 @@ func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, l
 		}
 	}
 	var enricher aggregate.Enricher
+	if lf.asn == "" {
+		lf.asn = findASNTable(dir)
+	}
 	if lf.asn != "" {
 		t, err := enrich.Load(lf.asn)
 		if err != nil {
 			return err
 		}
+		log.Info("ASN/country table loaded", "file", lf.asn, "ranges", t.Len())
 		enricher = t
 	}
 
