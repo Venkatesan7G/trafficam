@@ -5,6 +5,7 @@ package main
 //
 //	trafficam export [-data DIR] -out FILE      save the database's minute rows to a file
 //	trafficam eval   [-data DIR | -in FILE] ... replay through rules / model and report alerts per day
+//	trafficam attacks [eval flags] [-labels FILE] plant attacks (or read VM labels) and compare arms
 
 import (
 	"context"
@@ -23,8 +24,9 @@ import (
 
 // labCommands are dispatched before the main flag set (they have their own flags).
 var labCommands = map[string]func([]string) error{
-	"export": exportCommand,
-	"eval":   evalCommand,
+	"export":  exportCommand,
+	"eval":    evalCommand,
+	"attacks": attacksCommand,
 }
 
 func exportCommand(args []string) error {
@@ -232,10 +234,70 @@ func writeJSON(path string, v any, private bool) error {
 				s.Events = nil
 			}
 		}
+		if cards, ok := v.([]*lab.Scorecard); ok {
+			for _, c := range cards {
+				c.Summary.Events = nil
+			}
+		}
 	}
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, b, 0o600)
+}
+
+func attacksCommand(args []string) error {
+	fs := flag.NewFlagSet("attacks", flag.ExitOnError)
+	var e evalFlags
+	e.register(fs)
+	labelsPath := fs.String("labels", "", "labels file from the VM scripts (lab/vm); without it, attacks are planted into the recording")
+	at := fs.String("at", "", "when planted attacks start (2006-01-02T15:04, in -tz); default 75% through the recording")
+	only := fs.String("only", "", "comma list of attack IDs to plant (default all)")
+	seed := fs.Uint64("seed", 1, "random seed for planted attacks")
+	fs.Parse(args)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	d, loc, err := e.load()
+	if err != nil {
+		return err
+	}
+	var labels lab.Labels
+	var attacks []lab.Attack
+	if *labelsPath != "" {
+		labels, attacks, err = lab.ApplyLabels(*labelsPath, d)
+	} else {
+		opt := lab.InjectOptions{Seed: *seed}
+		if *at != "" {
+			if opt.At, err = time.ParseInLocation("2006-01-02T15:04", *at, loc); err != nil {
+				return fmt.Errorf("-at: %w", err)
+			}
+		}
+		if *only != "" {
+			opt.Only = strings.Split(*only, ",")
+		}
+		d, labels, attacks, err = lab.Inject(d, opt)
+	}
+	if err != nil {
+		return err
+	}
+	arms, err := e.buildArms()
+	if err != nil {
+		return err
+	}
+	res, _, err := runArms(ctx, d, arms, e.options(loc), e.grace)
+	if err != nil {
+		return err
+	}
+	var cards []*lab.Scorecard
+	for _, r := range res {
+		cards = append(cards, lab.Score(r, labels, attacks, e.grace))
+	}
+	lab.WriteComparison(os.Stdout, d, attacks, cards)
+	lab.WriteFalseAlarmSources(os.Stdout, cards, e.private)
+	if e.jsonOut != "" {
+		return writeJSON(e.jsonOut, cards, e.private)
+	}
+	return nil
 }
