@@ -212,6 +212,48 @@ often show up as made by `systemd-resolved` rather than the program that
 asked, so the DNS scenarios can look different on a real Linux VM than when
 planted.
 
+## Tuning the "new destination" thresholds
+
+Three settings decide when the rules start reporting new things:
+
+| setting | default | what it does | flag |
+|---|---|---|---|
+| install grace | 48 h | no "new program" / "new destination" alerts while the install is younger | `-grace` |
+| program age | 72 h | a program must be this old before its new destinations alert | `-program-age` |
+| max hosts | 20 | programs with more known destinations (browsers) are left to the model | `-max-hosts` |
+
+`trafficam tune` tries every combination on the same recording and ranks them:
+
+    trafficam tune -in ~/trafficam-pc1.jsonl.gz                # rules only, fast
+    trafficam tune -in ~/trafficam-pc1.jsonl.gz -model         # include the model's alerts
+    trafficam tune -in ... -graces 24h,48h -ages 48h,72h,96h -hosts 10,20,40
+
+It plants three waves of attacks, so the cost of waiting is measured too:
+30 h after install (inside most graces), 60 h after install (programs still
+young), and the full set 75 % of the way through. Ranking puts **catching
+attacks first**, then fewest false alarms per day, then fewest false alarms
+right after install. That follows your "low false alarms but no misses". The
+report shows where the shipped default lands, and how each setting moves the
+numbers on its own.
+
+With `-model` the model runs once with the default settings and its verdicts
+are reused for every combination (the thresholds don't change the model).
+That keeps a sweep of 80 settings to about one model replay. The small
+approximation: the model's 3-day "don't learn from rows that alerted" guard
+saw the default settings' alerts.
+
+**How to decide.** Don't change a default because of one machine. Run `tune`
+on each recording (your PCs, the VM, volunteers' if they are willing to run
+it themselves), and look for a setting that is in the top group on all of
+them. Then change the defaults in `internal/rules/rules.go` (and the
+`Default*` values in `internal/lab/tune.go`) in a PR of its own.
+
+On the fake PC, the defaults miss every attack in the first 72 hours, by
+design (grace plus program age). A 24 h program age catches the 60 h wave at no
+extra false-alarm cost there. Whether that holds on a real PC, where young
+programs pick up new servers all the time, is exactly what the real
+recordings will tell.
+
 ## What this does not measure
 
 - **Whether a clean recording is really clean.** Read the alert list.

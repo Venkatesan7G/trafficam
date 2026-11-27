@@ -10,7 +10,7 @@
 //	trafficam dump   [-data DIR]               print what is stored
 //	trafficam live   [-data DIR]               watch this PC's real traffic (needs admin/root)
 //	trafficam service install|uninstall|start|stop   (Windows) run "live" as a Windows service
-//	trafficam export|eval|attacks ...          measure alerts on recorded traffic (docs/VALIDATION.md)
+//	trafficam export|eval|attacks|tune ...     measure alerts on recorded traffic (docs/VALIDATION.md)
 //
 // Optional offline lists, all off unless a file is given (see docs/ARCHITECTURE.md):
 //
@@ -50,7 +50,7 @@ func main() {
 		if runningAsService() { // started by the Windows Service Control Manager
 			os.Args = append(os.Args, "service", "run")
 		} else {
-			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service|export|eval|attacks [flags]")
+			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service|export|eval|attacks|tune [flags]")
 			os.Exit(2)
 		}
 	}

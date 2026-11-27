@@ -6,6 +6,7 @@ package main
 //	trafficam export [-data DIR] -out FILE      save the database's minute rows to a file
 //	trafficam eval   [-data DIR | -in FILE] ... replay through rules / model and report alerts per day
 //	trafficam attacks [eval flags] [-labels FILE] plant attacks (or read VM labels) and compare arms
+//	trafficam tune    [eval flags] ...          try many novelty thresholds and rank them
 
 import (
 	"context"
@@ -27,6 +28,7 @@ var labCommands = map[string]func([]string) error{
 	"export":  exportCommand,
 	"eval":    evalCommand,
 	"attacks": attacksCommand,
+	"tune":    tuneCommand,
 }
 
 func exportCommand(args []string) error {
@@ -300,4 +302,110 @@ func attacksCommand(args []string) error {
 		return writeJSON(e.jsonOut, cards, e.private)
 	}
 	return nil
+}
+
+func tuneCommand(args []string) error {
+	fs := flag.NewFlagSet("tune", flag.ExitOnError)
+	var e evalFlags
+	e.register(fs)
+	graces := fs.String("graces", "12h,24h,48h,72h", "install grace values to try")
+	ages := fs.String("ages", "24h,48h,72h,120h", "program-age values to try")
+	hosts := fs.String("hosts", "5,10,20,40,80", "max-hosts values to try")
+	withModel := fs.Bool("model", false, "include the model's alerts (runs the model once; slower)")
+	noAttacks := fs.Bool("no-attacks", false, "measure false alarms only (no planted attacks)")
+	labelsPath := fs.String("labels", "", "use a VM labels file instead of planted attacks")
+	seed := fs.Uint64("seed", 1, "random seed for planted attacks")
+	fs.Parse(args)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	g, err := parseDurations(*graces)
+	if err != nil {
+		return fmt.Errorf("-graces: %w", err)
+	}
+	a, err := parseDurations(*ages)
+	if err != nil {
+		return fmt.Errorf("-ages: %w", err)
+	}
+	var h []int
+	for _, f := range strings.Split(*hosts, ",") {
+		var n int
+		if _, err := fmt.Sscan(strings.TrimSpace(f), &n); err != nil || n <= 0 {
+			return fmt.Errorf("-hosts: bad value %q", f)
+		}
+		h = append(h, n)
+	}
+	d, loc, err := e.load()
+	if err != nil {
+		return err
+	}
+	var labels lab.Labels
+	var attacks []lab.Attack
+	switch {
+	case *labelsPath != "":
+		labels, attacks, err = lab.ApplyLabels(*labelsPath, d)
+	case !*noAttacks:
+		d, labels, attacks, err = plantWaves(d, *seed)
+	}
+	if err != nil {
+		return err
+	}
+	base, err := e.rulesConfig()
+	if err != nil {
+		return err
+	}
+	opt := lab.TuneOptions{Options: e.options(loc), Base: base, Model: *withModel}
+	if *withModel && e.prior != "" {
+		if opt.Prior, err = loadPrior(e.prior); err != nil {
+			return err
+		}
+	}
+	if !e.quiet {
+		opt.Log = func(s string) { fmt.Fprintln(os.Stderr, " ", s) }
+	}
+	rs, err := lab.Tune(ctx, d, labels, attacks, lab.Grid(g, a, h), opt)
+	if err != nil {
+		return err
+	}
+	lab.WriteTuning(os.Stdout, d, attacks, rs, *withModel, e.top)
+	if e.jsonOut != "" {
+		return writeJSON(e.jsonOut, rs, false)
+	}
+	return nil
+}
+
+// plantWaves plants three waves of attacks, so the thresholds that delay
+// alerts after an install are tested too: right after install (30 h, inside
+// most graces), while programs are still young (60 h), and once everything
+// has settled (75 % through the recording, the full set).
+func plantWaves(d *lab.Data, seed uint64) (*lab.Data, lab.Labels, []lab.Attack, error) {
+	install := d.InstallTime()
+	early := []string{"beacon-quiet", "exfil-new", "dga", "dropper"}
+	var all []lab.Attack
+	var labels lab.Labels
+	for _, w := range []lab.InjectOptions{
+		{At: install.Add(30 * time.Hour), MinHistory: 24 * time.Hour, Only: early, IDSuffix: "@30h", Gap: time.Hour},
+		{At: install.Add(60 * time.Hour), MinHistory: 24 * time.Hour, Only: early, IDSuffix: "@60h", Gap: time.Hour},
+		{},
+	} {
+		w.Seed, w.Prev = seed, labels
+		nd, nl, at, err := lab.Inject(d, w)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		d, labels, all = nd, nl, append(all, at...)
+	}
+	return d, labels, all, nil
+}
+
+func parseDurations(s string) ([]time.Duration, error) {
+	var out []time.Duration
+	for _, f := range strings.Split(s, ",") {
+		v, err := time.ParseDuration(strings.TrimSpace(f))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
