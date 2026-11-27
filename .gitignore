@@ -4,3 +4,5 @@
 *.db-shm
 *.key
 capture*.jsonl*
+/dist/
+/out/

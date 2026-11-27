@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/Venkatesan7G/trafficam/internal/aggregate"
@@ -49,11 +50,15 @@ func main() {
 		if runningAsService() { // started by the Windows Service Control Manager
 			os.Args = append(os.Args, "service", "run")
 		} else {
-			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service [flags]")
+			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service|version [flags]")
 			os.Exit(2)
 		}
 	}
 	cmd, args := os.Args[1], os.Args[2:]
+	if cmd == "version" {
+		fmt.Println("trafficam", version)
+		return
+	}
 	if cmd == "service" {
 		// "trafficam service <action> [flags]": the action comes before the flags.
 		if err := serviceCommand(args); err != nil {
@@ -74,7 +79,7 @@ func main() {
 	fs.StringVar(&lf.prior, "prior", "", "head C prior-risk weights (TCW1 file); empty = head C off")
 	fs.Parse(args)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	var err error

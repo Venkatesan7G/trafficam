@@ -1,0 +1,50 @@
+# systemd unit for trafficam on Linux. Installed by the .deb and .rpm
+# packages to /usr/lib/systemd/system/trafficam.service.
+#
+# It is installed but NOT started. To start it now and at every boot:
+#   sudo systemctl enable --now trafficam
+# Follow its log (alerts are printed there for now):
+#   journalctl -u trafficam -f
+[Unit]
+Description=trafficam network watcher (passive, never blocks traffic)
+Documentation=https://github.com/Venkatesan7G/trafficam
+After=network.target
+# Give up restarting if it crashes 5 times in 5 minutes.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/trafficam live -data /var/lib/trafficam -watch /etc/trafficam/watch.txt -ignore /etc/trafficam/ignore.txt
+# Restart after a crash (the [Unit] limits above stop a crash loop).
+Restart=on-failure
+RestartSec=5
+
+# Loading eBPF programs and reading every process's /proc entry needs root.
+# Everything below takes away what trafficam does not need.
+User=root
+# /var/lib/trafficam, created with mode 0700 and owned by root.
+StateDirectory=trafficam
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# Only the powers eBPF capture needs (see docs/LINUX.md), plus reading
+# other users' /proc entries so each connection gets its program name.
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_NET_RAW CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_SYS_RESOURCE
+# Nice level and I/O class so it never slows the desktop down.
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target
