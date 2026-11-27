@@ -11,6 +11,8 @@
 //	trafficam live   [-data DIR]               watch this PC's real traffic (needs admin/root)
 //	trafficam service install|uninstall|start|stop   (Windows) run "live" as a Windows service
 //	trafficam lists [show|add|remove|edit|path] ...  view and change your watch and ignore lists
+//	trafficam agent [-test] [-autostart on|off]       show alerts as desktop notifications (run as yourself)
+//	trafficam status                                 ask the running watcher how it is doing
 //
 // Optional offline lists, all off unless a file is given (see docs/ARCHITECTURE.md):
 //
@@ -21,6 +23,7 @@
 // The watch and ignore lists are re-read automatically when they change.
 //
 //	-asn FILE         offline CIDR -> ASN,country table
+//	-api ADDR         local socket/pipe for the desktop agent (live: on by default; demo/replay: off)
 package main
 
 import (
@@ -54,7 +57,7 @@ func main() {
 		if runningAsService() { // started by the Windows Service Control Manager
 			os.Args = append(os.Args, "service", "run")
 		} else {
-			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service|lists [flags]")
+			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service|lists|agent|status [flags]")
 			os.Exit(2)
 		}
 	}
@@ -67,8 +70,8 @@ func main() {
 		}
 		return
 	}
-	if cmd == "lists" {
-		if err := listsCommand(args); err != nil {
+	if sub, ok := map[string]func([]string) error{"lists": listsCommand, "agent": agentCommand, "status": statusCommand}[cmd]; ok {
+		if err := sub(args); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -84,6 +87,7 @@ func main() {
 	fs.StringVar(&lf.ignore, "ignore", "", "your ignore list")
 	fs.StringVar(&lf.asn, "asn", "", "offline ASN/country table (CSV)")
 	fs.StringVar(&lf.prior, "prior", "", "head C prior-risk weights (TCW1 file); empty = head C off")
+	fs.StringVar(&lf.api, "api", "", "local API socket/pipe for the desktop agent (default for live: the system one; demo/replay: off)")
 	fs.Parse(args)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -158,7 +162,7 @@ func openStore(dir string) (*store.Store, error) {
 }
 
 // listFiles are the optional offline files named on the command line.
-type listFiles struct{ blocklist, watch, ignore, asn, prior string }
+type listFiles struct{ blocklist, watch, ignore, asn, prior, api string }
 
 func loadList(path string) (*blocklist.List, error) {
 	if path == "" {
@@ -247,12 +251,24 @@ func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, l
 		return err
 	}))
 
+	// Alerts are stored and passed to the desktop agent (trafficam agent).
+	br := newBridge(st, dir, c.Name(), lf, oneShot, log)
+	if br.task != nil {
+		tasks = append(tasks, *br.task)
+	}
+	tasks = append(tasks, service.Every("prune-alerts", time.Hour, 24*time.Hour, func(context.Context) error {
+		_, err := st.AlertsPruneBefore(time.Now().AddDate(0, 0, -90))
+		return err
+	}))
+
 	svc, err := service.New(service.Config{
 		Collector: c, Store: st, OneShot: oneShot, Scorer: scorer, Tasks: tasks, Enrich: enricher, Log: log,
+		Notifier: br.hub,
 	})
 	if err != nil {
 		return err
 	}
+	br.svc.Store(svc)
 	if err := svc.Run(ctx); err != nil {
 		return err
 	}
