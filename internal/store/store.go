@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	_ "github.com/mutecomm/go-sqlcipher/v4" // registers the "sqlite3" driver (cgo)
@@ -19,7 +20,7 @@ import (
 )
 
 // DBSchemaVersion is the version of the tables below (not of event.Minute).
-const DBSchemaVersion = 2
+const DBSchemaVersion = 3
 
 // ErrCannotOpen means the file exists but the key does not unlock it: wrong
 // key, corruption, or tampering. The caller decides what to do (the planned
@@ -79,6 +80,8 @@ CREATE TABLE seen (
 );
 CREATE INDEX seen_prog ON seen(prog_key);
 INSERT OR IGNORE INTO meta(k,v) VALUES('installed_at', CAST(strftime('%s','now') AS TEXT));`,
+	// v2 -> v3: the OS service a process hosts (Windows service / systemd unit).
+	`ALTER TABLE minutes ADD COLUMN prog_service TEXT NOT NULL DEFAULT '';`,
 }
 
 func (s *Store) migrate() error {
@@ -166,8 +169,8 @@ func (s *Store) Insert(rows []Scored) error {
 	}
 	defer tx.Rollback()
 	st, err := tx.Prepare(`INSERT INTO minutes
-(start,prog_key,prog_name,proto,dir,host,remote_ip,port,flows,packets,bytes_in,bytes_out,failed,score,alerted,schema_v,prog_parent,prog_signer,asn,country,dur_ms)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+(start,prog_key,prog_name,proto,dir,host,remote_ip,port,flows,packets,bytes_in,bytes_out,failed,score,alerted,schema_v,prog_parent,prog_signer,asn,country,dur_ms,prog_service)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -177,7 +180,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 		if _, err := st.Exec(m.Start.Unix(), m.Program.Key(), m.Program.Name, string(m.Proto), string(m.Dir),
 			m.Host, m.RemoteIP, int(m.Port), m.Flows, m.Packets, m.BytesIn, m.BytesOut, m.FailedCount,
 			r.Score, boolInt(r.Alerted), m.V,
-			m.Program.Parent, m.Program.Signer, m.ASN, m.Country, m.DurationMs); err != nil {
+			m.Program.Parent, m.Program.Signer, m.ASN, m.Country, m.DurationMs, m.Program.Service); err != nil {
 			return err
 		}
 	}
@@ -187,7 +190,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 // Since returns stored rows with start >= since, oldest first. The model's
 // nightly training reads its 30-day window with this.
 func (s *Store) Since(since time.Time) ([]Scored, error) {
-	rows, err := s.db.Query(`SELECT start,prog_key,prog_name,proto,dir,host,remote_ip,port,flows,packets,bytes_in,bytes_out,failed,score,alerted,schema_v,prog_parent,prog_signer,asn,country,dur_ms
+	rows, err := s.db.Query(`SELECT start,prog_key,prog_name,proto,dir,host,remote_ip,port,flows,packets,bytes_in,bytes_out,failed,score,alerted,schema_v,prog_parent,prog_signer,asn,country,dur_ms,prog_service
 FROM minutes WHERE start >= ? ORDER BY start, id`, since.Unix())
 	if err != nil {
 		return nil, err
@@ -205,10 +208,15 @@ FROM minutes WHERE start >= ? ORDER BY start, id`, since.Unix())
 		)
 		if err := rows.Scan(&start, &key, &m.Program.Name, &proto, &dir, &m.Host, &m.RemoteIP, &port,
 			&m.Flows, &m.Packets, &m.BytesIn, &m.BytesOut, &m.FailedCount, &score, &alerted, &m.V,
-			&m.Program.Parent, &m.Program.Signer, &m.ASN, &m.Country, &m.DurationMs); err != nil {
+			&m.Program.Parent, &m.Program.Signer, &m.ASN, &m.Country, &m.DurationMs, &m.Program.Service); err != nil {
 			return nil, err
 		}
 		m.Start = time.Unix(start, 0).UTC()
+		// prog_key is Program.Key(): the path (or name), plus "|service" when
+		// the process hosts a service. Undo that to get the path back.
+		if m.Program.Service != "" {
+			key = strings.TrimSuffix(key, "|"+m.Program.Service)
+		}
 		m.Program.Path = ""
 		if key != m.Program.Name {
 			m.Program.Path = key

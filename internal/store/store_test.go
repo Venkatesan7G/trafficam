@@ -120,3 +120,24 @@ func TestNewFieldsAndSeenCounters(t *testing.T) {
 		t.Fatal("unknown program should be empty")
 	}
 }
+
+func TestServiceRoundTrip(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "s.db"), key(5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	p := event.Program{Name: "svchost.exe", Path: `C:\Windows\System32\svchost.exe`, Service: "Dnscache"}
+	m := event.Minute{V: event.SchemaVersion, Start: time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC), Program: p,
+		Proto: event.DNS, Dir: event.Outbound, Host: "example.org"}
+	if err := s.Insert([]Scored{{Minute: m}}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Since(m.Start)
+	if len(got) != 1 || got[0].Minute.Program != p || got[0].Minute.Program.Key() != p.Key() {
+		t.Fatalf("service not round-tripped: %+v", got)
+	}
+	if p.Key() != `C:\Windows\System32\svchost.exe|Dnscache` {
+		t.Fatalf("key %q", p.Key())
+	}
+}

@@ -23,7 +23,8 @@ import (
 
 // SchemaVersion is the version of the Flow and Minute formats.
 // v2 added Minute.ASN, Country and DurationMs, and Flow.Duration.
-const SchemaVersion = 2
+// v3 added Program.Service.
+const SchemaVersion = 3
 
 // Proto is the transport protocol of a flow.
 type Proto string
@@ -51,15 +52,26 @@ type Program struct {
 	Path   string `json:"path,omitempty"`   // full executable path
 	Parent string `json:"parent,omitempty"` // parent program name
 	Signer string `json:"signer,omitempty"` // code signer (Windows) or package (Linux), if known
+	// Service is the OS service this process runs, if any: the Windows
+	// service name(s) hosted in the process (e.g. "Dnscache"), or the systemd
+	// unit on Linux. Several Windows services share one svchost.exe, so
+	// without this they would all look like the same program.
+	Service string `json:"svc,omitempty"`
 }
 
 // Key is the stable identity used to group a program's behaviour over time.
 // The path is preferred over the name because names are easy to fake.
+// When the process hosts a service, the service name is added so that, say,
+// Dnscache and wuauserv inside svchost.exe get separate baselines.
 func (p Program) Key() string {
+	k := p.Name
 	if p.Path != "" {
-		return p.Path
+		k = p.Path
 	}
-	return p.Name
+	if p.Service != "" {
+		k += "|" + p.Service
+	}
+	return k
 }
 
 // Flow is one raw observation produced by a Collector.
