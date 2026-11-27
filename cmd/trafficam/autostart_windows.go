@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -36,3 +37,20 @@ func setAutostart(on bool) error {
 	fmt.Println("the trafficam agent will start at sign-in")
 	return nil
 }
+
+func autostartEnabled() (bool, error) {
+	k, err := registry.OpenKey(registry.CURRENT_USER, runKey, registry.QUERY_VALUE)
+	if err != nil {
+		return false, nil
+	}
+	defer k.Close()
+	_, _, err = k.GetStringValue("trafficam-agent")
+	return err == nil, nil
+}
+
+// openBrowser opens a local trafficam link in the user's default browser.
+func openBrowser(u string) error {
+	return exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", u).Start()
+}
+
+const accessHint = "Run this as the signed-in user, not from another account."

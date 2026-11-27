@@ -22,6 +22,8 @@
 | `internal/alerts` | Stores every alert (DB table `alerts`) and wakes anyone waiting for new ones. It is the service's `score.Notifier`. |
 | `internal/localapi` | Local API for the desktop agent: HTTP over a Unix socket (SO_PEERCRED check) or a named pipe (ACL). No TCP port. |
 | `internal/agent`, `internal/notify` | `trafficam agent`: runs as the user, long-polls the API, shows desktop notifications (D-Bus on Linux, toast on Windows), rate-limited. |
+| `internal/ui` | The trafficam window: served by the agent on 127.0.0.1 with one-time tickets, session cookies, Host/Origin checks and a strict CSP. Static files are embedded. |
+| `internal/selfcheck` | The install-time self-check used by `trafficam check` and the window. |
 | `internal/ramp` | The learning ramp (Listening, Settling in, Watching, Guarding) as days since install. |
 | `internal/userlists` | Safe add/remove/show for the user's watch and ignore lists (keeps comments, validates, writes atomically). Used by `trafficam lists`. |
 | `internal/baseline` | Per (program, destination) counters: first seen, days seen, auto-absorb after 3 days. |

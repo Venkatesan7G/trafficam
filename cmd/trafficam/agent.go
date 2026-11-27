@@ -9,6 +9,8 @@ package main
 //	trafficam agent -test           show one test notification and exit
 //	trafficam agent -autostart on   start the agent every time you log in (off to undo)
 //	trafficam status                print the watcher's status
+//	trafficam ui                    open the trafficam window (progress, alerts, lists, self-check)
+//	trafficam check                 check that everything is installed and working
 //
 // On Linux your user must be in the "trafficam" group to read alerts from a
 // watcher running as root:  sudo groupadd -f trafficam && sudo usermod -aG trafficam $USER
@@ -65,8 +67,27 @@ func agentCommand(args []string) error {
 	if err := desk.Check(); err != nil {
 		log.Warn("desktop notifications may not work", "err", err)
 	}
+	addrs := apiAddrs(*api)
+
+	// The trafficam window, served on 127.0.0.1 while the agent runs.
+	// Clicking a notification opens it. If it can't start, notifications
+	// still work.
+	win := newWindow(addrs, desk, true, log)
+	var windowURL func() string
+	if l, err := win.Listen(); err != nil {
+		log.Warn("the trafficam window is unavailable", "err", err)
+	} else {
+		writeLauncher(win)
+		defer removeLauncher(win)
+		go func() {
+			if err := win.Serve(ctx, l); err != nil {
+				log.Error("trafficam window stopped", "err", err)
+			}
+		}()
+		windowURL = win.TicketURL
+	}
 	log.Info("trafficam agent started", "notifications", desk.Name())
-	return agent.New(agent.Config{Connect: agent.ConnectAny(apiAddrs(*api)), Desktop: desk, Log: log}).Run(ctx)
+	return agent.New(agent.Config{Connect: agent.ConnectAny(addrs), Desktop: desk, Log: log, WindowURL: windowURL}).Run(ctx)
 }
 
 func statusCommand(args []string) error {
@@ -85,7 +106,7 @@ func statusCommand(args []string) error {
 	}
 	fmt.Printf("Stage:      %s (day %d, %.0f%% of the way to Guarding", st.Ramp.Stage, st.Ramp.Day, st.Ramp.Percent)
 	if st.Ramp.NextName != "" {
-		fmt.Printf("; %s in %d day(s)", st.Ramp.NextName, st.Ramp.NextIn)
+		fmt.Printf("; %s starts in %d day(s)", st.Ramp.NextName, st.Ramp.NextIn)
 	}
 	fmt.Println(")")
 	fmt.Printf("Capture:    %s, %d flows since %s", st.Collector, st.Flows, st.Started.Local().Format("Jan 2 15:04"))

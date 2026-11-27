@@ -87,3 +87,10 @@ func (s *Store) ProgramSummary(prog string) (first time.Time, hosts int, err err
 	}
 	return
 }
+
+// SeenStats says how much has been learned so far: how many programs have
+// used the network and how many (program, destination) pairs are known.
+func (s *Store) SeenStats() (programs, pairs int, err error) {
+	err = s.db.QueryRow(`SELECT COUNT(DISTINCT prog_key), COUNT(*) FROM seen`).Scan(&programs, &pairs)
+	return
+}

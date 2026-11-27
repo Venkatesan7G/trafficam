@@ -17,7 +17,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -271,18 +270,5 @@ func (a *Agent) save() {
 
 // ConnectAny returns a Connect function that tries each address in turn.
 func ConnectAny(addrs []string) func(ctx context.Context) (API, error) {
-	return func(ctx context.Context) (API, error) {
-		var errs []error
-		for _, ad := range addrs {
-			c := localapi.NewClient(ad)
-			cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			_, err := c.Status(cctx)
-			cancel()
-			if err == nil {
-				return c, nil
-			}
-			errs = append(errs, err)
-		}
-		return nil, errors.Join(errs...)
-	}
+	return func(ctx context.Context) (API, error) { return localapi.Find(ctx, addrs) }
 }

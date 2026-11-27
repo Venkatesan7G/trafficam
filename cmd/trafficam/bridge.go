@@ -13,6 +13,7 @@ import (
 	"github.com/Venkatesan7G/trafficam/internal/ramp"
 	"github.com/Venkatesan7G/trafficam/internal/service"
 	"github.com/Venkatesan7G/trafficam/internal/store"
+	"github.com/Venkatesan7G/trafficam/internal/userlists"
 )
 
 // tamperFile is written by the tamper response when the key or database has
@@ -38,7 +39,17 @@ func newBridge(st *store.Store, dir, collectorName string, lf listFiles, oneShot
 		return b // demo / replay: no API unless asked for
 	}
 	started := time.Now().UTC()
-	srv := &localapi.Server{Hub: b.hub, Store: st, Log: log, Status: func() localapi.Status {
+	listPath := func(flagVal string, k userlists.Kind) string {
+		if flagVal != "" {
+			return flagVal
+		}
+		return userlists.Path(dir, k)
+	}
+	lists := &localapi.Lists{
+		Watch:  userlists.File{Path: listPath(lf.watch, userlists.Watch), Kind: userlists.Watch},
+		Ignore: userlists.File{Path: listPath(lf.ignore, userlists.Ignore), Kind: userlists.Ignore},
+	}
+	srv := &localapi.Server{Hub: b.hub, Store: st, Actions: st, Lists: lists, Log: log, Status: func() localapi.Status {
 		s := localapi.Status{Now: time.Now().UTC(), Started: started, Collector: collectorName}
 		if at, err := st.InstalledAt(); err == nil {
 			s.InstalledAt, s.Ramp = at, ramp.At(time.Since(at))

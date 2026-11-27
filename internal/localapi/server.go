@@ -25,7 +25,10 @@ type Server struct {
 	Hub    *alerts.Hub
 	Store  AlertStore
 	Status func() Status // filled in by the service owner
-	Log    *slog.Logger
+	// Actions and Lists enable the alert buttons and list editing; nil = off.
+	Actions ActionStore
+	Lists   *Lists
+	Log     *slog.Logger
 
 	// MaxWait caps a long-poll (default 25 s, below common client timeouts).
 	MaxWait time.Duration
@@ -42,6 +45,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /v1/status", s.status)
 	m.HandleFunc("GET /v1/alerts", s.list)
 	m.HandleFunc("GET /v1/alerts/wait", s.wait)
+	s.registerActions(m)
 	s.mux = m
 	return m
 }
