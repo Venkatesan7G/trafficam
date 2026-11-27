@@ -64,8 +64,9 @@ as a `service.Task` (see the comment in `cmd/trafficam/main.go`).
 
 ## Known gaps (deliberately left for follow-ups)
 
-- `keyseal.MachineIDProvider` defends against copied files, not malware running
-  as you. Windows DPAPI/TPM and Linux TPM2 providers should replace it.
+- The database key is sealed with the TPM where there is one (Windows: TPM plus
+  DPAPI, else DPAPI; Linux: TPM2, else the machine id). No method stops malware
+  already running as administrator/root. Details: [KEYS.md](KEYS.md).
 - Tamper handling: the store reports `ErrCannotOpen`; the loud-alert and
   self-destruct policy is not implemented yet.
 - No offline ASN/country data file is shipped; `-asn` takes a CSV someone builds from a public snapshot.
