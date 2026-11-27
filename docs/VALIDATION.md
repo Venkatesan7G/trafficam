@@ -1,0 +1,148 @@
+# Measuring trafficam on real traffic
+
+The question this answers: **on a real PC, used normally, how many alerts a day
+does trafficam show?** On a clean machine every alert is a false alarm, so this
+is the false-alarm rate. The design budget is about 1.5 alerts a day once the
+install has settled.
+
+Everything here runs on your own machine, offline. Nothing is uploaded. The
+commands read the data `trafficam live` already keeps in its encrypted
+database.
+
+## How it works (the short version)
+
+`trafficam eval` takes the minute rows recorded on a PC and **replays them
+through a brand-new trafficam**, as if it had been installed at the first row:
+the same rules, the same baseline counters, the same learning model, the same
+nightly training at 03:00 of each replayed day. Because it is a replay, it can
+run several versions side by side on exactly the same traffic:
+
+| arm | what runs |
+|---|---|
+| `rules` | only the simple rules (new program, new destination for a settled program, your lists) |
+| `rules+model` | the rules plus the learning model (heads A and B), which is what ships |
+| `rules+model+prior` | the same plus head C (needs `-prior FILE`) |
+
+It then counts **alerts**: one alert = the first alerted row for a program and
+destination on a day. A beacon that trips 200 minute rows in a day is one
+notification, so it counts once.
+
+Two numbers matter in the report:
+
+- **per day**: alerts divided by all days, including the quiet first days.
+- **steady/day**: alerts per day after the 48 h install grace and (for arms
+  with the model) after the model first trained. This is what a settled install
+  feels like, and the number to compare with the 1.5/day budget.
+
+The differences from the live watcher are small and deliberate: the clock is
+the recording's own time, the baseline counters live in memory (a test checks
+they count exactly like the database), and nightly training runs every
+replayed night without the "only when idle and on mains power" check.
+
+## Try it first on made-up traffic
+
+    go build -o trafficam ./cmd/trafficam
+    ./trafficam eval -synthetic 14 -train-cap 10s
+
+That replays 14 days of a fake PC. Use it to learn the report, not to judge
+trafficam: the fake PC is not a real one.
+
+## Steps for a real multi-day run
+
+You need: a Windows 10/11 PC or a Linux PC (kernel 6.1 or newer), used
+normally, for **at least 14 days, ideally 30**. A VM you use daily counts; an
+idle VM does not (it has almost no traffic, so it will look perfect).
+
+### 1. Start the watcher and leave it running
+
+Linux (needs root for eBPF):
+
+    go build -o trafficam ./cmd/trafficam
+    sudo install -m 755 trafficam /usr/local/bin/trafficam
+    sudo systemd-run --unit=trafficam-trial --property=Restart=always \
+        /usr/local/bin/trafficam live -data /var/lib/trafficam
+    systemctl status trafficam-trial      # should say "active (running)"
+
+`systemd-run` restarts it if it crashes, but not after a reboot. After a
+reboot, run the `systemd-run` line again (same `-data` folder, so nothing is
+lost). Proper packages with a permanent service are separate work.
+
+Windows (PowerShell as Administrator):
+
+    go build -o trafficam.exe ./cmd/trafficam
+    .\trafficam.exe service install
+    .\trafficam.exe service start
+
+The service starts again by itself after a reboot. Its data is in
+`C:\ProgramData\trafficam`.
+
+### 2. Use the PC normally, and keep a short diary
+
+Write down anything out of the ordinary with the date: installed or updated a
+program, used a VPN, a new device on the network, travelled. When the report
+lists an alert, the diary is how you tell "that was me installing Zoom" from
+"I have no idea what that is".
+
+### 3. Look at the numbers whenever you like
+
+It is safe to do this while the watcher runs. Linux:
+
+    sudo trafficam eval -data /var/lib/trafficam
+
+Windows (as Administrator):
+
+    .\trafficam.exe eval -data C:\ProgramData\trafficam
+
+Training is replayed for every night, so a 30-day run takes a while (each
+night is capped at 60 s per arm, as live). `-train-cap 15s` makes it faster
+at a small cost in accuracy; `-arms rules` skips the model and is instant.
+
+### 4. Save a copy before day 35
+
+The database keeps 35 days. Export the rows so later runs (attack tests,
+threshold tuning) can reuse them:
+
+    sudo trafficam export -data /var/lib/trafficam -out ~/trafficam-pc1.jsonl.gz
+    trafficam eval -in ~/trafficam-pc1.jsonl.gz
+
+**The export file lists every program and destination your PC used.** Keep it
+private. Do not send it to anyone unless you have read it and are happy to.
+
+### 5. Read the report
+
+For each arm you get a per-day table and the alerts to review. For each alert,
+check your diary and write down whether it was real (something you did not
+expect and do not want) or a false alarm, and why it fired (`new-program`,
+`new-destination`, `model`, ...). Programs with many alerts are listed first:
+they are where a threshold or a trust rule would help most.
+
+What to record per machine, so machines can be compared:
+
+| | |
+|---|---|
+| machine | e.g. "V's Windows laptop", "Ubuntu VM" |
+| days recorded | |
+| steady/day, each arm | from the Summary |
+| worst day | from the Summary |
+| real alerts found | from your review |
+| top 3 noisy programs | from the alert list |
+
+### 6. Volunteers
+
+A volunteer follows steps 1 to 5 on their own PC and sends only the report
+made with `-private`:
+
+    trafficam eval -data ... -private > report.txt
+
+`-private` replaces program paths and destinations with short random codes
+and drops the reasons, so the report says how many alerts and why in general,
+but not where the PC connects. Counts are identical. Ask them to add their
+review (how many were real) as a sentence, not by sending the export file.
+
+## What this does not measure
+
+- **Missed attacks.** A clean recording only shows false alarms. Planted
+  attacks are measured separately (attack harness).
+- **Whether a clean recording is really clean.** Read the alert list.
+- **Desktop notification behaviour.** The report counts what would be shown;
+  how it is shown is separate work.
