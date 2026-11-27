@@ -3,16 +3,28 @@
 Development/release tool only; the product never runs this. Examples:
 
   python -I python/prior/train_prior.py --synthetic --out /tmp/head_c.tcw
-  python -I python/prior/train_prior.py \\
-      --source ctu13,ctu13,CTU-13-scenario-1.binetflow \\
-      --source stratosphere,ctu13,stratosphere.binetflow --out head_c.tcw
+  python -I python/prior/train_prior.py --dataset ctu13 \\
+      --source neris,features,neris.csv --source rbot,features,rbot.csv --out head_c.tcw
 
 --source is GROUP,KIND,PATH. Rows of one group are one "dataset" for the
 cross-dataset gate: the net is trained on each group in turn and tested on the
 others, and must clear --min-auc on every held-out group or no file is written
 ("a head C that doesn't transfer doesn't ship").
+
+KIND "features" is a CSV written by `go run ./cmd/priorprep` (trafficam's own
+feature code, so training and the watcher agree exactly). The older kinds
+(ctu13, unsw, dga, benign) compute features in Python and are kept for
+experiments.
+
+--dataset names the public dataset(s) the sources come from; each must be
+allowed in licences.py. Next to the weights, OUT.sources.json records the
+datasets, their licences and citations, and the SHA-256 of every input file
+and of the weights.
 """
 import argparse
+import csv
+import hashlib
+import json
 import os
 import sys
 
@@ -114,16 +126,59 @@ def export(net, mean, std, path, provenance):
                "features": F.NAMES, "provenance": provenance})
 
 
+def load_features_csv(path):
+    """Rows from cmd/priorprep: group,label,<14 features>; 'nan' = missing."""
+    xs, ys = [], []
+    with open(path, newline="") as fh:
+        r = csv.reader(fh)
+        head = next(r)
+        if head[2:] != F.NAMES:
+            sys.exit(f"{path}: columns {head[2:]} do not match features.py {F.NAMES}")
+        for row in r:
+            ys.append(float(row[1]))
+            xs.append([float(v) for v in row[2:]])
+    return np.array(xs, dtype=np.float32), np.array(ys, dtype=np.float32)
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def write_sources(out, datasets, sources, report, groups, extra):
+    from prior import licences
+    doc = {
+        "weights": os.path.basename(out),
+        "weights_sha256": sha256_file(out),
+        "datasets": [dict(licences.DATASETS[d], id=d) for d in datasets],
+        "excluded": [{"id": k, "name": v["name"], "reason": v["why_not"]}
+                     for k, v in licences.DATASETS.items() if not v["allowed"]],
+        "inputs": [{"group": g, "kind": k, "file": os.path.basename(p), "sha256": sha256_file(p)}
+                   for g, k, p in sources],
+        "groups": {g: {"rows": int(len(y)), "positives": int(y.sum())} for g, (_, y) in groups.items()},
+        "cross_dataset_auc": [{"train": a, "test": b, "auc": round(v, 4)} for a, b, v in report],
+    }
+    doc.update(extra)
+    with open(out + ".sources.json", "w") as f:
+        json.dump(doc, f, indent=2)
+    print("wrote", out + ".sources.json")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--synthetic", action="store_true", help="two synthetic labs; exercises the pipeline only")
-    ap.add_argument("--source", action="append", default=[], help="GROUP,KIND,PATH (kind: ctu13|unsw|dga|benign)")
+    ap.add_argument("--source", action="append", default=[], help="GROUP,KIND,PATH (kind: features|ctu13|unsw|dga|benign)")
+    ap.add_argument("--dataset", action="append", default=[], help="public dataset the sources come from (see licences.py)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--min-auc", type=float, default=0.85)
     ap.add_argument("--epochs", type=int, default=40)
     a = ap.parse_args()
 
     groups = {}
+    sources = []
     if a.synthetic:
         from prior import synth
         for lab, seed in (("a", 1), ("b", 2)):
@@ -131,19 +186,29 @@ def main():
             groups["synthetic-" + lab] = (F.matrix_nan(rows), y)
         prov = "SYNTHETIC DATA: pipeline test only, do not ship"
     else:
-        from prior import datasets as D
+        from prior import datasets as D, licences
+        if not a.dataset:
+            sys.exit("name the public dataset(s) with --dataset (see python/prior/licences.py)")
+        for d in a.dataset:
+            licences.check(d)
         loaders = {"ctu13": D.load_ctu13_binetflow, "unsw": D.load_unsw_nb15,
                    "dga": lambda p: D.load_domain_list(p, 1), "benign": lambda p: D.load_domain_list(p, 0)}
         acc = {}
         for s in a.source:
             g, kind, path = s.split(",", 2)
-            rows, y = loaders[kind](path)
+            if kind == "features":
+                x, y = load_features_csv(path)
+            else:
+                rows, y = loaders[kind](path)
+                x, y = F.matrix_nan(rows), np.array(y, dtype=np.float32)
             xs, ys = acc.setdefault(g, ([], []))
-            xs.append(F.matrix_nan(rows))
-            ys.append(np.array(y, dtype=np.float32))
+            xs.append(x)
+            ys.append(y)
+            sources.append((g, kind, path))
         for g, (xs, ys) in acc.items():
             groups[g] = (np.concatenate(xs), np.concatenate(ys))
-        prov = "datasets: " + "; ".join(a.source)
+        prov = "datasets: " + ", ".join(licences.DATASETS[d]["name"] + " (" + licences.DATASETS[d]["licence"] + ")"
+                                        for d in a.dataset) + "; groups: " + ", ".join(groups)
     if len(groups) < 2:
         sys.exit("need at least two dataset groups for the cross-dataset gate")
     ok, report = cross_dataset_gate(groups, a.min_auc, a.epochs)
@@ -157,6 +222,8 @@ def main():
     net = train(x, y, mean, std, a.epochs)
     export(net, mean, std, a.out, prov)
     print("wrote", a.out)
+    if not a.synthetic:
+        write_sources(a.out, a.dataset, sources, report, groups, {"min_auc": a.min_auc, "epochs": a.epochs})
 
 
 if __name__ == "__main__":
