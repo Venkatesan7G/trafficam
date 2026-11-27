@@ -25,7 +25,7 @@ func startServerIn(t *testing.T, dir string) (*Client, *alerts.Hub, string) {
 	hub := &alerts.Hub{St: st}
 	srv := &Server{Hub: hub, Store: st, MaxWait: 300 * time.Millisecond,
 		Status: func() Status { return Status{Collector: "test", Flows: 7} }}
-	addr := filepath.Join(dir, "api.sock")
+	addr := testAddr(dir)
 	l, err := Listen(addr)
 	if err != nil {
 		t.Fatal(err)
