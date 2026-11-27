@@ -99,7 +99,7 @@ func TestAlertButtonsAndLists(t *testing.T) {
 	lists := &Lists{Watch: userlists.File{Path: filepath.Join(dir, "watch.txt"), Kind: userlists.Watch},
 		Ignore: userlists.File{Path: filepath.Join(dir, "ignore.txt"), Kind: userlists.Ignore}}
 	srv := &Server{Hub: hub, Store: st, Actions: st, Lists: lists}
-	addr := filepath.Join(dir, "api.sock")
+	addr := testAddr(dir)
 	l, err := Listen(addr)
 	if err != nil {
 		t.Fatal(err)
