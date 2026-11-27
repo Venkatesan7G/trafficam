@@ -20,6 +20,7 @@ package etw
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,7 @@ var (
 	kernelNetworkGUID = windows.GUID{Data1: 0x7dd42a49, Data2: 0x5329, Data3: 0x4832, Data4: [8]byte{0x8d, 0xfd, 0x43, 0xd9, 0x79, 0x15, 0x3a, 0x88}}
 	dnsClientGUID     = windows.GUID{Data1: 0x1c95126e, Data2: 0x7eea, Data3: 0x49a9, Data4: [8]byte{0xa3, 0xfe, 0xa3, 0x78, 0xb0, 0x3d, 0xdb, 0x4d}}
 	kernelProcessGUID = windows.GUID{Data1: 0x22fb2cd6, Data2: 0x0e7b, Data3: 0x422b, Data4: [8]byte{0xa0, 0xc7, 0x2f, 0xad, 0x1f, 0xd0, 0xe7, 0x16}}
+	tcpipGUID         = windows.GUID{Data1: 0x2f07e2ee, Data2: 0x15db, Data3: 0x40f1, Data4: [8]byte{0x90, 0xef, 0x9d, 0x7b, 0xa2, 0x82, 0x18, 0x8a}}
 )
 
 const (
@@ -64,7 +66,11 @@ const (
 
 	keywordKernelNetworkIPv4 = 0x10
 	keywordKernelNetworkIPv6 = 0x20
-	keywordKernelProcess     = 0x10 // WINEVENT_KEYWORD_PROCESS
+	keywordKernelProcess     = 0x10        // WINEVENT_KEYWORD_PROCESS
+	keywordTCPIPConnectPath  = 0x400000000 // ut:ConnectPath (Microsoft-Windows-TCPIP)
+
+	enableTraceParametersVersion2 = 2
+	eventFilterTypeEventID        = 0x80000200
 
 	invalidProcessTraceHandle = ^uint64(0)
 	maxLoggerNameChars        = 1024
@@ -122,6 +128,32 @@ func newProps() *propsBuffer {
 	b.p.FlushTimer = 1
 	b.p.LoggerNameOffset = uint32(unsafe.Offsetof(b.name))
 	return b
+}
+
+// eventFilterDescriptor is EVENT_FILTER_DESCRIPTOR (16 bytes).
+type eventFilterDescriptor struct {
+	Ptr  uint64 // address of the filter data
+	Size uint32
+	Type uint32
+}
+
+// enableTraceParameters is ENABLE_TRACE_PARAMETERS version 2 (48 bytes).
+type enableTraceParameters struct {
+	Version          uint32
+	EnableProperty   uint32
+	ControlFlags     uint32
+	SourceID         windows.GUID
+	EnableFilterDesc *eventFilterDescriptor
+	FilterDescCount  uint32
+}
+
+// eventFilterEventID is EVENT_FILTER_EVENT_ID holding one event ID:
+// FilterIn BOOLEAN | Reserved UCHAR | Count USHORT | Events [1]USHORT.
+type eventFilterEventID struct {
+	FilterIn uint8
+	Reserved uint8
+	Count    uint16
+	Events   [1]uint16
 }
 
 // eventDescriptor is EVENT_DESCRIPTOR (16 bytes).
@@ -309,6 +341,13 @@ func startSession(name string, h handler) (*session, error) {
 	if err := enable(&kernelProcessGUID, keywordKernelProcess); err != nil {
 		softErr = errors.Join(softErr, fmt.Errorf("etw: enable Kernel-Process: %w", err))
 	}
+	// Failed TCP connects (refused, timed out). Microsoft-Windows-TCPIP is a
+	// chatty provider, so ask Windows to deliver only event 1034 (an event-ID
+	// filter, Windows 8.1+). Without it we would miss connections that are
+	// refused straight away, but everything else still works.
+	if err := enableOnlyEvent(s.handle, &tcpipGUID, keywordTCPIPConnectPath, tcpConnectFailID); err != nil {
+		softErr = errors.Join(softErr, fmt.Errorf("etw: enable TCPIP connect failures (refused connections will not be seen): %w", err))
+	}
 
 	activeHandler.Store(&h)
 	lf := &eventTraceLogfile{
@@ -336,6 +375,19 @@ func startSession(name string, h handler) (*session, error) {
 		s.err = winErr(r)
 	}()
 	return s, softErr
+}
+
+// enableOnlyEvent switches on a provider for the session, filtered in the
+// kernel so that only event id reaches us.
+func enableOnlyEvent(handle uint64, g *windows.GUID, keywords uint64, id uint16) error {
+	f := &eventFilterEventID{FilterIn: 1, Count: 1, Events: [1]uint16{id}}
+	d := &eventFilterDescriptor{Ptr: uint64(uintptr(unsafe.Pointer(f))), Size: uint32(unsafe.Sizeof(*f)), Type: eventFilterTypeEventID}
+	p := &enableTraceParameters{Version: enableTraceParametersVersion2, EnableFilterDesc: d, FilterDescCount: 1}
+	r, _, _ := procEnableTraceEx2.Call(uintptr(handle), uintptr(unsafe.Pointer(g)),
+		eventControlCodeEnableProvider, traceLevelVerbose, uintptr(keywords), 0, 0, uintptr(unsafe.Pointer(p)))
+	runtime.KeepAlive(f)
+	runtime.KeepAlive(d)
+	return winErr(r)
 }
 
 // Close stops the session and waits (briefly) for the consumer to finish.

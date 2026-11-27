@@ -41,6 +41,7 @@ type Stats struct {
 	ETWLost      atomic.Uint64 // events Windows dropped because we read too slowly
 	Flows        atomic.Uint64 // flows emitted
 	LayoutChecks atomic.Uint64 // tests only: network events cross-checked with TDH
+	ConnectFails atomic.Uint64 // tests only: TCPIP connect-failure events cross-checked
 }
 
 func (c *Collector) Name() string { return "windows-etw" }
@@ -180,6 +181,19 @@ func (c *Collector) onEvent(rec *eventRecord, push func(item)) {
 		}
 		push(item{kind: 1, net: ev})
 
+	case tcpipGUID:
+		if id != tcpConnectFailID {
+			return // the kernel-side filter should already drop these
+		}
+		ev, ok := parseTCPConnectFail(rec.userData(), t)
+		if !ok {
+			return
+		}
+		if c.checkLayout {
+			c.crossCheckFail(rec, ev)
+		}
+		push(item{kind: 1, net: ev})
+
 	case dnsClientGUID:
 		if id != dnsCompletedID {
 			return
@@ -205,6 +219,31 @@ func (c *Collector) onEvent(rec *eventRecord, push func(item)) {
 			pid, _ := rec.propUint32("ProcessID")
 			push(item{kind: 3, proc: procEvent{PID: pid, Time: t}})
 		}
+	}
+}
+
+// crossCheckFail is crossCheck for TCPIP event 1034.
+func (c *Collector) crossCheckFail(rec *eventRecord, ev netEvent) {
+	c.Stats.LayoutChecks.Add(1)
+	c.Stats.ConnectFails.Add(1)
+	bad := func(field string, got, want any) {
+		c.layoutBad.CompareAndSwap(nil, fmt.Sprintf("TCPIP event 1034 field %s: parsed %v, TDH says %v", field, got, want))
+	}
+	if pid, ok := rec.propUint32("ProcessId"); !ok || pid != ev.PID {
+		bad("ProcessId", ev.PID, pid)
+	}
+	if st, ok := rec.propUint32("Status"); !ok || st != ev.Size {
+		bad("Status", ev.Size, st)
+	}
+	if b := rec.property("RemoteAddress"); len(b) == 0 {
+		bad("RemoteAddress", ev.Remote, "missing")
+	} else if ap, ok := parseSockaddr(b); !ok || ap != ev.Remote {
+		bad("RemoteAddress", ev.Remote, ap)
+	}
+	if b := rec.property("LocalAddress"); len(b) == 0 {
+		bad("LocalAddress", ev.Local, "missing")
+	} else if ap, ok := parseSockaddr(b); !ok || ap != ev.Local {
+		bad("LocalAddress", ev.Local, ap)
 	}
 }
 

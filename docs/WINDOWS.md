@@ -11,7 +11,7 @@ Code: `internal/collector/etw` (capture) and `cmd/trafficam/service_windows.go`
 | Bytes in/out per connection | Sum of that provider's send/receive events for the 4-tuple |
 | Direction | Connect event = outbound, accept event = inbound, else guessed from ports |
 | Duration | First to last event of the connection |
-| Failed connections | TCP with retries and no byte back (time-outs, black holes) |
+| Failed connections | Microsoft-Windows-TCPIP event 1034 "connect failed" (refused, timed out, no route), filtered in the kernel to that one event; also TCP with retries and no byte back |
 | DNS name per connection | Microsoft-Windows-DNS-Client event 3008, matched by PID then globally |
 | DNS lookups by process, incl. failures | Same event; failed lookups are DNS flows with `Established=false` |
 | Process path | `QueryFullProcessImageNameW`, or the Kernel-Process start event |
@@ -40,9 +40,12 @@ and once more when they close.
 
 Known limits found while verifying:
 
-- A TCP connection **refused** on 127.0.0.1 produces no Kernel-Network event
-  at all, so it is not reported. Time-outs (no answer) are reported as
-  failed. Refusals from remote hosts are untested.
+- A TCP connection that is **refused** produces no Kernel-Network event at
+  all, so it is picked up from the TCPIP provider's event 1034 instead and
+  reported as a failed outbound attempt (`TestLiveCapture` Q3 checks this on
+  127.0.0.1). Refusals from remote hosts use the same event but are untested.
+  If a locked-down machine won't let us switch on that provider, the log says
+  so and refused connections are missed; everything else still works.
 - Programs that do their own DNS (browsers with DNS-over-HTTPS switched on)
   bypass the DNS-Client, so their connections are labelled by IP, or by a name
   another process looked up.

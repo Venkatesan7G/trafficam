@@ -42,13 +42,16 @@ import (
 
 func TestStructSizes(t *testing.T) {
 	sizes := map[string][2]uintptr{
-		"EVENT_TRACE_PROPERTIES": {unsafe.Sizeof(eventTraceProperties{}), 120},
-		"EVENT_HEADER":           {unsafe.Sizeof(eventHeader{}), 80},
-		"EVENT_RECORD":           {unsafe.Sizeof(eventRecord{}), 112},
-		"EVENT_TRACE":            {unsafe.Sizeof(eventTrace{}), 88},
-		"TRACE_LOGFILE_HEADER":   {unsafe.Sizeof(traceLogfileHeader{}), 280},
-		"EVENT_TRACE_LOGFILEW":   {unsafe.Sizeof(eventTraceLogfile{}), 448},
-		"WINTRUST_CATALOG_INFO":  {unsafe.Sizeof(wintrustCatalogInfo{}), 72},
+		"EVENT_TRACE_PROPERTIES":  {unsafe.Sizeof(eventTraceProperties{}), 120},
+		"EVENT_HEADER":            {unsafe.Sizeof(eventHeader{}), 80},
+		"EVENT_RECORD":            {unsafe.Sizeof(eventRecord{}), 112},
+		"EVENT_TRACE":             {unsafe.Sizeof(eventTrace{}), 88},
+		"TRACE_LOGFILE_HEADER":    {unsafe.Sizeof(traceLogfileHeader{}), 280},
+		"EVENT_TRACE_LOGFILEW":    {unsafe.Sizeof(eventTraceLogfile{}), 448},
+		"WINTRUST_CATALOG_INFO":   {unsafe.Sizeof(wintrustCatalogInfo{}), 72},
+		"ENABLE_TRACE_PARAMETERS": {unsafe.Sizeof(enableTraceParameters{}), 48},
+		"EVENT_FILTER_DESCRIPTOR": {unsafe.Sizeof(eventFilterDescriptor{}), 16},
+		"EVENT_FILTER_EVENT_ID":   {unsafe.Sizeof(eventFilterEventID{}), 6},
 	}
 	for name, s := range sizes {
 		if s[0] != s[1] {
@@ -208,8 +211,10 @@ func TestLiveCapture(t *testing.T) {
 	}
 
 	// 6. Failed connections: a closed local port, and an address that never answers.
+	var refusedAddr netip.AddrPort
 	if l, err := net.Listen("tcp4", "127.0.0.1:0"); err == nil {
 		addr := l.Addr().String()
+		refusedAddr = netip.MustParseAddrPort(addr)
 		l.Close()
 		_, err := net.DialTimeout("tcp4", addr, 3*time.Second)
 		t.Logf("dial closed port %s: %v", addr, err)
@@ -225,8 +230,8 @@ func TestLiveCapture(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	t.Logf("stats: events=%d flows=%d queue_dropped=%d layout_checks=%d",
-		c.Stats.Events.Load(), c.Stats.Flows.Load(), c.Stats.QueueDropped.Load(), c.Stats.LayoutChecks.Load())
+	t.Logf("stats: events=%d flows=%d queue_dropped=%d layout_checks=%d connect_fails=%d",
+		c.Stats.Events.Load(), c.Stats.Flows.Load(), c.Stats.QueueDropped.Load(), c.Stats.LayoutChecks.Load(), c.Stats.ConnectFails.Load())
 	for _, f := range flows {
 		if uint32(f.Program.PID) == me || (curlPID != 0 && uint32(f.Program.PID) == curlPID) {
 			t.Logf("flow: %s %s %v -> %v dns=%q in=%d out=%d pkts=%d est=%v dur=%v prog=%+v",
@@ -313,6 +318,19 @@ func TestLiveCapture(t *testing.T) {
 			if f.DNSName != "example.com" || f.Remote.Port() != 80 {
 				t.Errorf("external flow should be example.com:80, got %q %v", f.DNSName, f.Remote)
 			}
+		}
+	}
+	// Q3: a refused connection (nothing listening) is reported as a failed
+	// outbound TCP attempt by this process.
+	if refusedAddr.IsValid() {
+		_, _, n, f = sum(func(f event.Flow) bool { return f.Proto == event.TCP && f.Remote == refusedAddr })
+		switch {
+		case n == 0:
+			t.Errorf("Q3: no flow for the refused connection to %v", refusedAddr)
+		case f.Established || f.Dir != event.Outbound || uint32(f.Program.PID) != me:
+			t.Errorf("Q3: refused connection should be a failed outbound flow from pid %d, got %+v", me, f)
+		default:
+			t.Logf("Q3 PASS: refused connection to %v reported as failed (%d flow(s))", refusedAddr, n)
 		}
 	}
 	if curlPID != 0 {

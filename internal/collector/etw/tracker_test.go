@@ -225,3 +225,82 @@ func TestDNSNamesPerProcessFirst(t *testing.T) {
 		t.Fatalf("not bounded: %d %d", d.count, len(d.global))
 	}
 }
+
+// sockaddrIn builds a Windows sockaddr_in / sockaddr_in6 with its length prefix.
+func sockaddrIn(ap netip.AddrPort) []byte {
+	var sa []byte
+	if ap.Addr().Is4() {
+		sa = make([]byte, 16)
+		binary.LittleEndian.PutUint16(sa[0:2], 2)
+		a := ap.Addr().As4()
+		copy(sa[4:8], a[:])
+	} else {
+		sa = make([]byte, 28)
+		binary.LittleEndian.PutUint16(sa[0:2], 23)
+		a := ap.Addr().As16()
+		copy(sa[8:24], a[:])
+	}
+	binary.BigEndian.PutUint16(sa[2:4], ap.Port())
+	return append(binary.LittleEndian.AppendUint32(nil, uint32(len(sa))), sa...)
+}
+
+// rawConnectFail builds a TCPIP event 1034 (version 1) payload.
+func rawConnectFail(local, remote netip.AddrPort, status, pid uint32) []byte {
+	b := append(sockaddrIn(local), sockaddrIn(remote)...)
+	b = binary.LittleEndian.AppendUint32(b, status)
+	b = binary.LittleEndian.AppendUint32(b, pid)
+	b = binary.LittleEndian.AppendUint32(b, 1)        // compartment
+	b = binary.LittleEndian.AppendUint64(b, 0xfeed)   // Tcb pointer
+	return binary.LittleEndian.AppendUint64(b, 12345) // ProcessStartKey (v1)
+}
+
+func TestParseTCPConnectFail(t *testing.T) {
+	for _, tc := range []struct{ local, remote string }{
+		{"192.168.1.10:51000", "203.0.113.5:4444"},
+		{"[2001:db8::10]:51000", "[2001:db8::5]:4444"},
+	} {
+		loc, rem := netip.MustParseAddrPort(tc.local), netip.MustParseAddrPort(tc.remote)
+		ev, ok := parseTCPConnectFail(rawConnectFail(loc, rem, statusConnectionRefused, 321), time.Now())
+		if !ok || ev.Op != opConnectFail || ev.Proto != event.TCP || ev.PID != 321 ||
+			ev.Local != loc || ev.Remote != rem || ev.Size != statusConnectionRefused {
+			t.Fatalf("%s: bad parse %+v ok=%v", tc.remote, ev, ok)
+		}
+	}
+	full := rawConnectFail(netip.MustParseAddrPort("10.0.0.1:1"), netip.MustParseAddrPort("10.0.0.2:2"), 0, 1)
+	for n := 0; n < 4+16+4+16+8; n++ { // every truncation before the PID must be rejected, never panic
+		if _, ok := parseTCPConnectFail(full[:n], time.Now()); ok {
+			t.Fatalf("accepted a payload cut to %d bytes", n)
+		}
+	}
+	bad := append([]byte(nil), full...)
+	binary.LittleEndian.PutUint32(bad[0:4], 1<<30) // absurd length
+	if _, ok := parseTCPConnectFail(bad, time.Now()); ok {
+		t.Fatal("accepted absurd address length")
+	}
+}
+
+func TestTrackerRefusedConnection(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	loc := netip.MustParseAddrPort("192.168.1.10:51000")
+	rem := netip.MustParseAddrPort("203.0.113.5:4444")
+
+	// Refused straight away: Kernel-Network said nothing, only event 1034.
+	h := newHarness(trackerConfig{})
+	h.tr.onNet(netEvent{Op: opConnectFail, Proto: event.TCP, PID: 9, Local: loc, Remote: rem, Size: statusConnectionRefused, Time: t0})
+	if len(h.flows) != 1 || h.flows[0].Established || h.flows[0].Dir != event.Outbound || h.flows[0].Remote != rem {
+		t.Fatalf("want one failed outbound flow, got %+v", h.flows)
+	}
+	if len(h.tr.conns) != 0 {
+		t.Fatal("failed attempt should be forgotten")
+	}
+
+	// Windows retried first (Kernel-Network reconnect events), then gave up.
+	// Must be ONE failed flow, reported at once, not a second one later.
+	h = newHarness(trackerConfig{})
+	h.tr.onNet(netEvent{Op: opReconnect, Proto: event.TCP, PID: 9, Local: loc, Remote: rem, Time: t0})
+	h.tr.onNet(netEvent{Op: opConnectFail, Proto: event.TCP, PID: 9, Local: netip.AddrPortFrom(netip.IPv4Unspecified(), 0), Remote: rem, Time: t0.Add(2 * time.Second)})
+	h.tr.sweep(t0.Add(10 * time.Minute))
+	if len(h.flows) != 1 || h.flows[0].Established || h.flows[0].Local != loc {
+		t.Fatalf("want one failed flow from %v, got %+v", loc, h.flows)
+	}
+}

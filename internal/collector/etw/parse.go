@@ -13,13 +13,14 @@ import (
 type netOp uint8
 
 const (
-	opSend       netOp = iota + 1 // bytes sent
-	opRecv                        // bytes received
-	opConnect                     // this PC opened a TCP connection (handshake done)
-	opAccept                      // this PC accepted an incoming TCP connection
-	opDisconnect                  // TCP connection closed
-	opRetransmit                  // TCP segment sent again (lost packet or no answer)
-	opReconnect                   // TCP connect attempt repeated (no answer yet)
+	opSend        netOp = iota + 1 // bytes sent
+	opRecv                         // bytes received
+	opConnect                      // this PC opened a TCP connection (handshake done)
+	opAccept                       // this PC accepted an incoming TCP connection
+	opDisconnect                   // TCP connection closed
+	opRetransmit                   // TCP segment sent again (lost packet or no answer)
+	opReconnect                    // TCP connect attempt repeated (no answer yet)
+	opConnectFail                  // TCP connect gave up: refused, timed out, unreachable (TCPIP event 1034)
 )
 
 // netEvent is one decoded Kernel-Network event. It is small and has no
@@ -28,7 +29,7 @@ type netEvent struct {
 	Op     netOp
 	Proto  event.Proto // TCP or UDP
 	PID    uint32
-	Size   uint32 // payload bytes for send/receive
+	Size   uint32 // payload bytes for send/receive; NTSTATUS for opConnectFail
 	Local  netip.AddrPort
 	Remote netip.AddrPort
 	Time   time.Time
@@ -102,6 +103,73 @@ func addrFrom(b []byte) netip.Addr {
 		return netip.AddrFrom4([4]byte(b)).Unmap()
 	}
 	return netip.AddrFrom16([16]byte(b)).Unmap() // "::ffff:1.2.3.4" -> "1.2.3.4"
+}
+
+// tcpConnectFailID is Microsoft-Windows-TCPIP's TcpConnectTcbFailure event:
+// "a TCP connect attempt failed". Kernel-Network has no usable event for
+// this (its "fail" events 17/49 carry no addresses), and a connection that is
+// refused straight away (the other side answers "nothing listening here")
+// sends no data, so without this event it would not be seen at all.
+const tcpConnectFailID = 1034
+
+// Status codes seen in event 1034 (NTSTATUS values).
+const (
+	statusConnectionRefused = 0xC0000236
+	statusIOTimeout         = 0xC00000B5
+)
+
+// parseTCPConnectFail decodes event 1034 (versions 0 and 1 share this start):
+//
+//	LocalAddressLength u32 | LocalAddress [len] | RemoteAddressLength u32 |
+//	RemoteAddress [len] | Status u32 | ProcessId u32 | Compartment u32 | Tcb ptr | ...
+//
+// The addresses are Windows SOCKADDR structures (sockaddr_in, 16 bytes, or
+// sockaddr_in6, 28 bytes). Integers are little-endian. The PID is the
+// process that owns the socket. ok is false for anything malformed.
+func parseTCPConnectFail(data []byte, t time.Time) (ev netEvent, ok bool) {
+	local, rest, ok1 := lenPrefixedSockaddr(data)
+	remote, rest, ok2 := lenPrefixedSockaddr(rest)
+	if !ok1 || !ok2 || len(rest) < 8 {
+		return ev, false
+	}
+	ev.Op, ev.Proto, ev.Time = opConnectFail, event.TCP, t
+	ev.Local, ev.Remote = local, remote
+	ev.Size = binary.LittleEndian.Uint32(rest[0:4]) // status
+	ev.PID = binary.LittleEndian.Uint32(rest[4:8])
+	return ev, true
+}
+
+// lenPrefixedSockaddr reads "length u32 | SOCKADDR" and returns the rest.
+func lenPrefixedSockaddr(b []byte) (netip.AddrPort, []byte, bool) {
+	if len(b) < 4 {
+		return netip.AddrPort{}, nil, false
+	}
+	n := int(binary.LittleEndian.Uint32(b[0:4]))
+	if n < 16 || n > 128 || len(b) < 4+n {
+		return netip.AddrPort{}, nil, false
+	}
+	ap, ok := parseSockaddr(b[4 : 4+n])
+	return ap, b[4+n:], ok
+}
+
+// parseSockaddr reads a Windows sockaddr_in (AF_INET = 2) or sockaddr_in6
+// (AF_INET6 = 23). The family is little-endian; port and address are in
+// network byte order.
+func parseSockaddr(b []byte) (netip.AddrPort, bool) {
+	if len(b) < 8 {
+		return netip.AddrPort{}, false
+	}
+	port := binary.BigEndian.Uint16(b[2:4])
+	switch binary.LittleEndian.Uint16(b[0:2]) {
+	case 2:
+		return netip.AddrPortFrom(addrFrom(b[4:8]), port), true
+	case 23:
+		if len(b) < 24 {
+			return netip.AddrPort{}, false
+		}
+		return netip.AddrPortFrom(addrFrom(b[8:24]), port), true
+	}
+	return netip.AddrPort{}, false
 }
 
 // dnsEvent is one finished DNS lookup from the DNS-Client provider (event 3008).
