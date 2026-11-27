@@ -36,6 +36,15 @@ type tracker struct {
 	udpOwner *ebpf.Map
 	conns    *ebpf.Map
 
+	// connState reads the kernel's conns table entry for a TCP socket:
+	// ok=false if it is no longer tracked. A field so unit tests can fake it.
+	connState func(sk uint64) (kc trafficamConn, ok bool)
+	// dnsRetry is how long to wait before each new look at udp_owner when
+	// a DNS question's sender is not known yet.
+	dnsRetry []time.Duration
+	// ownerLookup replaces the udp_owner map in unit tests.
+	ownerLookup func(port uint16) (trafficamOwner, bool)
+
 	dnsActive atomic.Bool
 
 	mu        sync.Mutex
@@ -55,7 +64,8 @@ type openConn struct {
 	local    netip.AddrPort
 	remote   netip.AddrPort
 	startNs  uint64
-	reported bool // already sent once because it stayed open long
+	reported bool   // already sent once because it stayed open long
+	repNs    uint64 // kernel time the early report covered up to
 }
 
 type udpReport struct {
@@ -75,7 +85,16 @@ func newTracker(cfg Config, emit func(event.Flow)) *tracker {
 		udpSeen: map[trafficamUdpKey]*udpReport{},
 		nowWall: time.Now,
 		nowBoot: boottimeNow,
+		// The kernel writes udp_owner when the send returns, which is
+		// normally microseconds after we read the packet; the later steps
+		// cover a busy or preempted machine.
+		dnsRetry: []time.Duration{20 * time.Millisecond, 100 * time.Millisecond, 500 * time.Millisecond},
 	}
+}
+
+// kernelConnState reads one entry of the kernel's conns table.
+func (t *tracker) kernelConnState(sk uint64) (kc trafficamConn, ok bool) {
+	return kc, t.conns.Lookup(sk, &kc) == nil
 }
 
 func (t *tracker) emit(f event.Flow) {
@@ -172,6 +191,14 @@ func (t *tracker) handleEvent(ev *trafficamEvent) {
 		} else {
 			prog = t.program(ev.O) // open event was lost; best effort
 		}
+		startNs := ev.StartNs
+		cont := c != nil && c.reported
+		if cont {
+			// Already reported once while open (and counted then). This
+			// report carries the totals and only the time since then, so
+			// the connection counts once and its time adds up right.
+			startNs = c.repNs
+		}
 		f := event.Flow{
 			Time:        t.wallTime(ev.EndNs),
 			Proto:       event.TCP,
@@ -184,9 +211,10 @@ func (t *tracker) handleEvent(ev *trafficamEvent) {
 			BytesOut:    ev.BytesOut,
 			Packets:     ev.PktsIn + ev.PktsOut,
 			Established: ev.Established != 0,
+			Cont:        cont,
 		}
-		if ev.EndNs > ev.StartNs && ev.StartNs != 0 {
-			f.Duration = time.Duration(ev.EndNs - ev.StartNs)
+		if ev.EndNs > startNs && startNs != 0 {
+			f.Duration = time.Duration(ev.EndNs - startNs)
 		}
 		t.emit(f)
 	}
@@ -212,27 +240,42 @@ func (t *tracker) sweepLoop(ctx context.Context) {
 func (t *tracker) sweepTCP() {
 	now := t.nowBoot()
 	var due []*openConn
-	var dueEst []bool
+	var dueKC []trafficamConn
+	state := t.connState
+	if state == nil {
+		state = t.kernelConnState
+	}
 	t.mu.Lock()
 	for sk, c := range t.open {
-		var kc trafficamConn
-		if err := t.conns.Lookup(sk, &kc); err != nil {
+		kc, ok := state(sk)
+		if !ok {
 			delete(t.open, sk) // close event was lost or entry evicted
 			continue
 		}
 		if !c.reported && now-c.startNs >= uint64(t.cfg.TCPReportAfter) {
 			c.reported = true
+			c.repNs = now
 			due = append(due, c)
-			dueEst = append(dueEst, kc.Established != 0)
+			dueKC = append(dueKC, kc)
 		}
 	}
 	t.mu.Unlock()
 	for i, c := range due {
+		local := c.local
+		if local.Port() == 0 && dueKC[i].Lport != 0 {
+			// connect() had not picked a local port yet when the open
+			// event was sent; the kernel saved it once established.
+			fam := uint8(unix.AF_INET6)
+			if c.remote.Addr().Is4() {
+				fam = unix.AF_INET
+			}
+			local = netip.AddrPortFrom(toAddr(fam, dueKC[i].Laddr), dueKC[i].Lport)
+		}
 		t.emit(event.Flow{
 			Time: t.nowWall(), Proto: event.TCP, Dir: c.dir, Program: c.prog,
-			Local: c.local, Remote: c.remote,
+			Local: local, Remote: c.remote,
 			DNSName:     t.names.Lookup(c.pid, c.remote.Addr()),
-			Established: dueEst[i],
+			Established: dueKC[i].Established != 0,
 			Duration:    time.Duration(now - c.startNs),
 		})
 	}
@@ -374,17 +417,9 @@ func (t *tracker) handleDNS(p dnsPacket, outgoing, loopback bool, size int) {
 	switch {
 	case !p.Response && p.Dst.Port() == 53 && outgoing:
 		// A program here asked a question. Its owner is in udp_owner,
-		// written by the kernel during the send. Very rarely we read the
-		// packet before the kernel hook has finished, so retry once.
-		o, ok := t.ownerOfPort(p.Src.Port())
-		if !ok {
-			time.AfterFunc(50*time.Millisecond, func() {
-				o, _ := t.ownerOfPort(p.Src.Port())
-				t.emitDNS(p, o, size)
-			})
-			return
-		}
-		t.emitDNS(p, o, size)
+		// written by the kernel when the send returns. We can read the
+		// packet a moment before that, so look again a few times.
+		t.dnsOwnerThen(p.Src.Port(), 0, func(o trafficamOwner) { t.emitDNS(p, o, size) })
 
 	case p.Response && p.Src.Port() == 53 && (!outgoing || loopback):
 		// An answer for a program here: remember which name each address
@@ -397,6 +432,17 @@ func (t *tracker) handleDNS(p dnsPacket, outgoing, loopback bool, size int) {
 			t.names.Put(pid, ip, p.Name, p.TTL)
 		}
 	}
+}
+
+// dnsOwnerThen calls fn with the owner of a local UDP port, waiting for
+// the kernel to record it if needed (t.dnsRetry). After the last try fn
+// gets an empty owner, and the lookup is reported as "unknown".
+func (t *tracker) dnsOwnerThen(port uint16, try int, fn func(trafficamOwner)) {
+	if o, ok := t.ownerOfPort(port); ok || try >= len(t.dnsRetry) {
+		fn(o)
+		return
+	}
+	time.AfterFunc(t.dnsRetry[try], func() { t.dnsOwnerThen(port, try+1, fn) })
 }
 
 func (t *tracker) emitDNS(p dnsPacket, o trafficamOwner, size int) {
@@ -413,6 +459,9 @@ func (t *tracker) emitDNS(p dnsPacket, o trafficamOwner, size int) {
 
 func (t *tracker) ownerOfPort(port uint16) (trafficamOwner, bool) {
 	var o trafficamOwner
+	if t.ownerLookup != nil {
+		return t.ownerLookup(port)
+	}
 	if t.udpOwner == nil {
 		return o, false
 	}

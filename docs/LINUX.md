@@ -20,13 +20,15 @@ rest of trafficam doesn't know or care that it runs on Linux.
 | TCP out/in | `tp_btf/inet_sock_set_state` (every TCP state change) | PID, exe path, parent, systemd unit, local/remote address and port, direction, bytes each way, packets, duration, handshake completed or failed |
 | TCP owner of inbound | `listen()` seen by the same hook; servers that were already running are read from `/proc` at start; `fentry/tcp_sendmsg`/`tcp_recvmsg` as a last resort | |
 | UDP | `fexit/udp_sendmsg`, `udp_recvmsg` (+ IPv6 versions) count bytes per (socket, peer) in a kernel table; user space reads it every 5 s | same as TCP, minus handshake |
-| DNS | read-only packet socket (like tcpdump) with a filter for UDP port 53; the program comes from a kernel table (local port → owner) | the name looked up; answers label later connections with the name (`Flow.DNSName`) |
+| DNS | read-only packet socket (like tcpdump) with a filter for UDP port 53; the program comes from a kernel table (local port → owner), checked again for up to 0.6 s if the packet is read before the kernel has filled it in | the name looked up; answers label later connections with the name (`Flow.DNSName`) |
 
 When flows are reported:
 
 - TCP: when the connection closes. If it is still open after 30 s it is also
   reported then (without byte counts), so a new long-lived connection is
-  noticed within 30 s. Long connections therefore count as 2 flows.
+  noticed within 30 s. The closing report is marked `cont` (a continuation):
+  it carries the totals and only the time since the early report, and it is
+  not counted as a second connection.
 - UDP: within 5 s of the first packet with a new peer, then once a minute while
   active, and a last time 30 s after it goes quiet.
 - DNS: as each question is sent.

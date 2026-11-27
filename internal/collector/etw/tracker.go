@@ -209,6 +209,7 @@ func (t *tracker) report(k connKey, c *conn, final bool) {
 		Packets:     c.pkts,
 		Duration:    c.last.Sub(c.periodStart()),
 		Established: k.Proto != event.TCP || !c.failed(),
+		Cont:        !c.reportedAt.IsZero(), // already counted in an earlier report
 	})
 	c.in, c.out, c.pkts, c.dirty = 0, 0, 0, false
 	c.reportedAt = c.last

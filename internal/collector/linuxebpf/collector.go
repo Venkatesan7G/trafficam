@@ -69,7 +69,8 @@ type Config struct {
 	// TCPReportAfter: a TCP connection still open after this long is
 	// reported straight away (without byte counts), so a new long-lived
 	// connection is noticed in seconds rather than when it closes. Its
-	// totals follow as a second flow when it closes. Default 30s.
+	// totals follow when it closes, in a flow marked Cont so the core does
+	// not count it as a second connection. Default 30s.
 	TCPReportAfter time.Duration
 	// UDPIdle: a UDP peer quiet for this long is considered finished.
 	// Default 30s.

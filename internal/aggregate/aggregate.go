@@ -57,15 +57,19 @@ func (a *Aggregator) Add(f event.Flow) {
 		a.rows[k] = m
 	}
 	m.DurationMs += uint64(f.Duration / time.Millisecond)
-	m.Flows++
+	if !f.Cont {
+		// A continuation of a connection already counted adds its bytes
+		// and time, but is not a new connection (and not a new failure).
+		m.Flows++
+		if f.Proto == event.TCP && !f.Established {
+			m.FailedCount++
+		}
+	}
 	m.Packets += f.Packets
 	m.BytesIn += f.BytesIn
 	m.BytesOut += f.BytesOut
 	if f.Remote.Addr().IsValid() {
 		m.RemoteIP = f.Remote.Addr().String()
-	}
-	if f.Proto == event.TCP && !f.Established {
-		m.FailedCount++
 	}
 }
 
