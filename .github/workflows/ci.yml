@@ -1,5 +1,39 @@
 name: ci
-on: [push, pull_request]
+
+# When CI runs, and when it does not.
+#  - pull_request: every PR gets one run per new commit.
+#  - push: only for main (after a merge). Pushes to other branches used to
+#    start a second, identical run next to the PR run; that is gone now.
+#  - workflow_dispatch: a "Run workflow" button in the Actions tab, for when
+#    you want a run by hand.
+# Changes that only touch docs or text files do not start CI at all.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+  workflow_dispatch:
+
+# One run at a time per PR (or per branch). If you push again while a run is
+# still going, the old run is cancelled: its result would be out of date
+# anyway, so it would only burn minutes.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# CI only reads the code; it never needs to write to the repository.
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
@@ -7,29 +41,40 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # Hard stop for the whole job. A normal run takes 2 to 4 minutes, so
+    # anything past 20 means something is stuck.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: '1.24' }
       - run: go vet ./...
-      - run: go test ./...
+        timeout-minutes: 5
+      - run: go test -timeout 5m ./...
+        timeout-minutes: 8
         env:
           # Windows runners are administrators, so the real ETW capture tests
           # must run there: fail instead of skipping if they cannot.
           TRAFFICAM_REQUIRE_ETW: '1'
       - name: ETW capture report (Windows)
         if: runner.os == 'Windows'
-        run: go test -count=1 -v ./internal/collector/etw/
+        run: go test -count=1 -timeout 3m -v ./internal/collector/etw/
+        timeout-minutes: 5
         env:
           TRAFFICAM_REQUIRE_ETW: '1'
       - name: Build trafficam.exe
         if: runner.os == 'Windows'
         run: go build -o trafficam.exe ./cmd/trafficam
+        timeout-minutes: 5
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Windows'
+        timeout-minutes: 3
         with:
           name: trafficam-windows-amd64
           path: trafficam.exe
+          # Test builds are for a quick look only; real downloads come from
+          # the release workflow. Keeping them 7 days saves storage quota.
+          retention-days: 7
 
   # Linux eBPF collector: rebuild the eBPF bytecode from C, then load it into
   # the runner's real kernel and check the flows (needs sudo, which GitHub's
@@ -40,6 +85,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -47,21 +93,27 @@ jobs:
       - run: uname -a
       - name: Install clang and libbpf headers
         run: sudo apt-get update && sudo apt-get install -y clang llvm libbpf-dev
+        timeout-minutes: 5
       - name: Regenerate eBPF objects from bpf/trafficam.bpf.c
         run: go generate ./internal/collector/linuxebpf
+        timeout-minutes: 3
       - run: go vet ./internal/collector/linuxebpf ./cmd/ebpfcheck
+        timeout-minutes: 3
       - name: Unit tests
-        run: go test ./internal/collector/linuxebpf
+        run: go test -timeout 3m ./internal/collector/linuxebpf
+        timeout-minutes: 5
       - name: Live tests (load eBPF into this runner's kernel)
+        timeout-minutes: 5
         run: |
           go test -c -o ebpf.test ./internal/collector/linuxebpf
-          sudo TRAFFICAM_EBPF_TEST=1 ./ebpf.test -test.run Live -test.v
+          sudo TRAFFICAM_EBPF_TEST=1 ./ebpf.test -test.run Live -test.v -test.timeout 3m
       - name: Smoke test ebpfcheck against real traffic
+        timeout-minutes: 3
         run: |
           go build -o ebpfcheck ./cmd/ebpfcheck
-          sudo ./ebpfcheck -for 15s > flows.jsonl &
+          sudo timeout -s KILL 60 ./ebpfcheck -for 15s > flows.jsonl &
           sleep 3
-          curl -s -o /dev/null https://github.com || true
+          curl -s -m 20 -o /dev/null https://github.com || true
           getent hosts example.com || true
           wait
           echo "--- flows seen ---"
