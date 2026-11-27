@@ -13,3 +13,40 @@ jobs:
         with: { go-version: '1.24' }
       - run: go vet ./...
       - run: go test ./...
+
+  # Linux eBPF collector: rebuild the eBPF bytecode from C, then load it into
+  # the runner's real kernel and check the flows (needs sudo, which GitHub's
+  # runners allow). Runs on x86-64 and arm64.
+  linux-ebpf:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+      - run: uname -a
+      - name: Install clang and libbpf headers
+        run: sudo apt-get update && sudo apt-get install -y clang llvm libbpf-dev
+      - name: Regenerate eBPF objects from bpf/trafficam.bpf.c
+        run: go generate ./internal/collector/linuxebpf
+      - run: go vet ./internal/collector/linuxebpf ./cmd/ebpfcheck
+      - name: Unit tests
+        run: go test ./internal/collector/linuxebpf
+      - name: Live tests (load eBPF into this runner's kernel)
+        run: |
+          go test -c -o ebpf.test ./internal/collector/linuxebpf
+          sudo TRAFFICAM_EBPF_TEST=1 ./ebpf.test -test.run Live -test.v
+      - name: Smoke test ebpfcheck against real traffic
+        run: |
+          go build -o ebpfcheck ./cmd/ebpfcheck
+          sudo ./ebpfcheck -for 15s > flows.jsonl &
+          sleep 3
+          curl -s -o /dev/null https://github.com || true
+          getent hosts example.com || true
+          wait
+          echo "--- flows seen ---"
+          cat flows.jsonl
+          grep -q '"name":"curl"' flows.jsonl
