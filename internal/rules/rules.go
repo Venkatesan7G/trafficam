@@ -14,6 +14,8 @@
 //     the model, which judges them against their own habits.
 //
 // The user's ignore list silences rules 3 and 4 (and the model) but never 1 or 2.
+// Trusted core OS programs (TrustedOS) skip rules 3 and 4 only: the lists and
+// the model still apply to them.
 package rules
 
 import (
@@ -25,6 +27,7 @@ import (
 	"github.com/Venkatesan7G/trafficam/internal/blocklist"
 	"github.com/Venkatesan7G/trafficam/internal/event"
 	"github.com/Venkatesan7G/trafficam/internal/score"
+	"github.com/Venkatesan7G/trafficam/internal/trustos"
 )
 
 // Config tunes the engine. Zero values give the defaults in brackets.
@@ -32,6 +35,7 @@ type Config struct {
 	Blocklist   *blocklist.List // known-bad snapshot; nil = switched off
 	AlertAnyway *blocklist.List // user "watch" list
 	Ignore      *blocklist.List // user "ignore" list
+	TrustedOS   *trustos.List   // core OS programs exempt from rules 3 and 4; nil = none
 
 	Baseline *baseline.Tracker // required
 
@@ -129,7 +133,7 @@ func (s *Scorer) Score(ctx context.Context, batch []event.Minute) ([]score.Verdi
 			continue
 		}
 
-		if pastGrace && m.Host != "" && !s.cfg.Ignore.IsMatch(m) {
+		if pastGrace && m.Host != "" && !s.cfg.Ignore.IsMatch(m) && !s.cfg.TrustedOS.Trusted(m.Program) {
 			if r := s.novelty(m, infos[i], told); r != "" {
 				v.Alert = true
 				v.Score = max(v.Score, 0.8)

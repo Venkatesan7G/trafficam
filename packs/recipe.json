@@ -1,0 +1,36 @@
+{
+  "description": "trafficam knowledge pack: known-bad destinations, trusted OS programs (head C weights and ASN table are added once their builds land)",
+  "outputs": [
+    {
+      "name": "blocklist.txt",
+      "kind": "blocklist",
+      "convert": "blocklist",
+      "inputs": [
+        {
+          "name": "abuse.ch Feodo Tracker botnet C2 IP blocklist",
+          "url": "https://feodotracker.abuse.ch/downloads/ipblocklist.txt",
+          "licence": "CC0 according to abuse.ch; re-check their terms before each release",
+          "format": "lines"
+        },
+        {
+          "name": "abuse.ch URLhaus malware host file",
+          "url": "https://urlhaus.abuse.ch/downloads/hostfile/",
+          "licence": "CC0 according to abuse.ch; re-check their terms before each release",
+          "format": "hosts"
+        }
+      ]
+    },
+    {
+      "name": "trusted-os.json",
+      "kind": "trusted-os",
+      "convert": "copy",
+      "inputs": [
+        {
+          "name": "trafficam built-in trusted OS programs",
+          "path": "../internal/trustos/default.json",
+          "licence": "GPL-3.0 (this repository)"
+        }
+      ]
+    }
+  ]
+}

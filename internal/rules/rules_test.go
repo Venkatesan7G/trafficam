@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/Venkatesan7G/trafficam/internal/blocklist"
 	"github.com/Venkatesan7G/trafficam/internal/event"
 	"github.com/Venkatesan7G/trafficam/internal/store"
+	"github.com/Venkatesan7G/trafficam/internal/trustos"
 )
 
 func newStore(t *testing.T) *store.Store {
@@ -91,5 +93,25 @@ func TestModelFailureStillGivesRuleAnswers(t *testing.T) {
 	v, err := s.Score(context.Background(), []event.Minute{m})
 	if err != nil || !v[0].Alert || len(got) == 0 {
 		t.Fatalf("err=%v v=%+v reported=%d", err, v, len(got))
+	}
+}
+
+func TestTrustedOSProgramsSkipNoveltyButNotLists(t *testing.T) {
+	st := newStore(t)
+	trusted, err := trustos.Parse([]byte(`{"format":1,"programs":[{"os":"` + runtime.GOOS + `","path":"/bin/timesyncd"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	at, _ := st.InstalledAt()
+	clock := at.Add(10 * 24 * time.Hour)
+	s, _ := NewScorer(Config{Baseline: &baseline.Tracker{B: st}, TrustedOS: trusted,
+		Blocklist: list(t, "evil.example"), Now: func() time.Time { return clock }}, nil)
+	v, _ := s.Score(context.Background(), []event.Minute{
+		row(clock, "timesyncd", "new-ntp.example"), // trusted: no "new program" alert
+		row(clock, "other", "x.example"),           // not trusted: alerts
+		row(clock, "timesyncd", "evil.example"),    // trusted, but known-bad still alerts
+	})
+	if v[0].Alert || !v[1].Alert || !v[2].Alert {
+		t.Fatalf("got %+v", v)
 	}
 }

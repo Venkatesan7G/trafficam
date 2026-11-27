@@ -17,6 +17,13 @@
 //	-watch FILE       your "alert me anyway" list
 //	-ignore FILE      your "ignore" list
 //	-asn FILE         offline CIDR -> ASN,country table
+//
+// "-blocklist pack" and "-prior pack" take the file from the installed,
+// signed knowledge pack (docs/PACKS.md); the ASN table and the trusted OS
+// list are used from the pack automatically when it has them.
+//
+//	trafficam pack install FILE [-data DIR]   verify and install a knowledge pack
+//	trafficam pack status [-data DIR]         show the installed pack
 package main
 
 import (
@@ -38,10 +45,12 @@ import (
 	"github.com/Venkatesan7G/trafficam/internal/keyseal"
 	"github.com/Venkatesan7G/trafficam/internal/model"
 	"github.com/Venkatesan7G/trafficam/internal/modelscore"
+	"github.com/Venkatesan7G/trafficam/internal/pack"
 	"github.com/Venkatesan7G/trafficam/internal/replay"
 	"github.com/Venkatesan7G/trafficam/internal/rules"
 	"github.com/Venkatesan7G/trafficam/internal/service"
 	"github.com/Venkatesan7G/trafficam/internal/store"
+	"github.com/Venkatesan7G/trafficam/internal/trustos"
 )
 
 func main() {
@@ -49,11 +58,18 @@ func main() {
 		if runningAsService() { // started by the Windows Service Control Manager
 			os.Args = append(os.Args, "service", "run")
 		} else {
-			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service [flags]")
+			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service|pack [flags]")
 			os.Exit(2)
 		}
 	}
 	cmd, args := os.Args[1], os.Args[2:]
+	if cmd == "pack" {
+		if err := packCommand(args); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if cmd == "service" {
 		// "trafficam service <action> [flags]": the action comes before the flags.
 		if err := serviceCommand(args); err != nil {
@@ -67,11 +83,12 @@ func main() {
 	n := fs.Int("n", 600, "demo/record: number of synthetic flows")
 	out := fs.String("out", "capture.jsonl", "record: output file (.gz to compress)")
 	var lf listFiles
-	fs.StringVar(&lf.blocklist, "blocklist", "", "known-bad snapshot file (opt-in)")
+	fs.StringVar(&lf.blocklist, "blocklist", "", "known-bad snapshot file, or \"pack\" (opt-in)")
 	fs.StringVar(&lf.watch, "watch", "", "your alert-anyway list")
 	fs.StringVar(&lf.ignore, "ignore", "", "your ignore list")
 	fs.StringVar(&lf.asn, "asn", "", "offline ASN/country table (CSV)")
-	fs.StringVar(&lf.prior, "prior", "", "head C prior-risk weights (TCW1 file); empty = head C off")
+	fs.StringVar(&lf.prior, "prior", "", "head C prior-risk weights (TCW1 file, or \"pack\"); empty = head C off")
+	fs.BoolVar(&lf.trustOS, "trust-os", true, "do not raise novelty alerts for core OS services (lists and model still apply)")
 	fs.Parse(args)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -146,7 +163,45 @@ func openStore(dir string) (*store.Store, error) {
 }
 
 // listFiles are the optional offline files named on the command line.
-type listFiles struct{ blocklist, watch, ignore, asn, prior string }
+type listFiles struct {
+	blocklist, watch, ignore, asn, prior string
+	trustOS                              bool
+}
+
+// fromPack resolves the "pack" value of -blocklist / -prior, and uses the
+// pack's ASN table when -asn is not given. A pack that fails verification is
+// ignored as a whole, loudly, and never used partly.
+func (lf *listFiles) fromPack(dir string, log *slog.Logger) (*pack.Installed, error) {
+	keys, err := pack.TrustedKeys()
+	if err != nil {
+		return nil, err
+	}
+	inst, err := pack.Load(dir, keys)
+	if err != nil {
+		log.Error("installed knowledge pack failed verification and is NOT used", "err", err)
+		inst = nil
+	} else if inst != nil {
+		log.Info("knowledge pack", "seq", inst.Manifest.Seq, "created", inst.Manifest.Created, "signed_by", inst.SignedBy)
+		if t, err := time.Parse("2006-01-02", inst.Manifest.Created); err == nil && time.Since(t) > 90*24*time.Hour {
+			log.Warn("knowledge pack is more than 90 days old; its known-bad list is getting stale", "created", inst.Manifest.Created)
+		}
+	}
+	for _, f := range []struct {
+		v    *string
+		kind string
+	}{{&lf.blocklist, pack.KindBlocklist}, {&lf.prior, pack.KindPrior}} {
+		if *f.v != "pack" {
+			continue
+		}
+		if *f.v = inst.Path(f.kind); *f.v == "" {
+			return nil, fmt.Errorf("-%s pack: no verified knowledge pack with a %s file is installed (see trafficam pack status)", f.kind, f.kind)
+		}
+	}
+	if lf.asn == "" {
+		lf.asn = inst.Path(pack.KindASN)
+	}
+	return inst, nil
+}
 
 func loadList(path string) (*blocklist.List, error) {
 	if path == "" {
@@ -162,6 +217,20 @@ func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, l
 		return err
 	}
 	defer st.Close()
+
+	inst, err := lf.fromPack(dir, log)
+	if err != nil {
+		return err
+	}
+	var trusted *trustos.List
+	if lf.trustOS {
+		trusted = trustos.Default()
+		if p := inst.Path(pack.KindTrustedOS); p != "" {
+			if trusted, err = trustos.Load(p); err != nil {
+				return err
+			}
+		}
+	}
 
 	var lists [3]*blocklist.List
 	for i, p := range []string{lf.blocklist, lf.watch, lf.ignore} {
@@ -207,7 +276,7 @@ func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, l
 
 	scorer, err := rules.NewScorer(rules.Config{
 		Baseline:  &baseline.Tracker{B: st},
-		Blocklist: lists[0], AlertAnyway: lists[1], Ignore: lists[2],
+		Blocklist: lists[0], AlertAnyway: lists[1], Ignore: lists[2], TrustedOS: trusted,
 	}, learner)
 	if err != nil {
 		return err
@@ -234,6 +303,48 @@ func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, l
 		svc.Stats.Flows.Load(), svc.Stats.Rows.Load(), svc.Stats.Dropped.Load(),
 		svc.Stats.Alerts.Load(), svc.Stats.Panics.Load())
 	return nil
+}
+
+// packCommand: "trafficam pack install FILE | status".
+func packCommand(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: trafficam pack install FILE | status [-data DIR]")
+	}
+	fs := flag.NewFlagSet("pack", flag.ExitOnError)
+	data := fs.String("data", defaultDataDir(), "data folder")
+	fs.Parse(args[1:])
+	keys, err := pack.TrustedKeys()
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "install":
+		if fs.NArg() != 1 {
+			return fmt.Errorf("usage: trafficam pack install [-data DIR] FILE")
+		}
+		inst, err := pack.Install(fs.Arg(0), *data, keys)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("installed knowledge pack %d (%s), signed by %s\n", inst.Manifest.Seq, inst.Manifest.Created, inst.SignedBy)
+		fmt.Println("restart trafficam to use it")
+		return nil
+	case "status":
+		inst, err := pack.Load(*data, keys)
+		if err != nil {
+			return err
+		}
+		if inst == nil {
+			fmt.Println("no knowledge pack installed")
+			return nil
+		}
+		fmt.Printf("knowledge pack %d (%s), signed by %s, verified\n", inst.Manifest.Seq, inst.Manifest.Created, inst.SignedBy)
+		for _, f := range inst.Manifest.Files {
+			fmt.Printf("  %-20s %s\n", f.Name, f.Kind)
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown pack action %q (want install or status)", args[0])
 }
 
 func dump(dir string) error {

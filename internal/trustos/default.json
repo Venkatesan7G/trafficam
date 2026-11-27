@@ -1,0 +1,18 @@
+{
+  "format": 1,
+  "programs": [
+    {"os": "windows", "path": "C:\\Windows\\System32\\svchost.exe", "signer": "Microsoft Windows", "service": "wuauserv", "note": "Windows Update"},
+    {"os": "windows", "path": "C:\\Windows\\System32\\svchost.exe", "signer": "Microsoft Windows", "service": "DoSvc", "note": "Delivery Optimization (Windows Update peer downloads)"},
+    {"os": "windows", "path": "C:\\Windows\\System32\\svchost.exe", "signer": "Microsoft Windows", "service": "W32Time", "note": "Windows Time"},
+    {"os": "windows", "path": "C:\\Windows\\System32\\svchost.exe", "signer": "Microsoft Windows", "service": "Dnscache", "note": "DNS Client"},
+    {"os": "windows", "path": "C:\\Windows\\System32\\svchost.exe", "signer": "Microsoft Windows", "service": "NlaSvc", "note": "Network Location Awareness (connectivity checks)"},
+    {"os": "windows", "path": "C:\\Windows\\System32\\svchost.exe", "signer": "Microsoft Windows", "service": "Dhcp", "note": "DHCP Client"},
+    {"os": "windows", "path": "C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\*\\MsMpEng.exe", "note": "Microsoft Defender engine (folder writable only by SYSTEM; signer name not yet checked on a real PC, so no signer condition)"},
+    {"os": "linux", "path": "/usr/lib/systemd/systemd-timesyncd", "service": "systemd-timesyncd.service", "note": "time sync"},
+    {"os": "linux", "path": "/usr/lib/systemd/systemd-resolved", "service": "systemd-resolved.service", "note": "DNS resolver"},
+    {"os": "linux", "path": "/usr/lib/systemd/systemd-networkd", "service": "systemd-networkd.service", "note": "network setup (DHCP)"},
+    {"os": "linux", "path": "/usr/sbin/NetworkManager", "service": "NetworkManager.service", "note": "network setup (DHCP, connectivity checks)"},
+    {"os": "linux", "path": "/usr/sbin/chronyd", "service": "chronyd.service", "note": "time sync"},
+    {"os": "linux", "path": "/usr/sbin/chronyd", "service": "chrony.service", "note": "time sync (Debian/Ubuntu unit name)"}
+  ]
+}

@@ -203,7 +203,7 @@ Roughly in order:
 5. **A learning ramp** you can see: Listening, Settling in, Watching, Guarding.
 6. **Stronger key sealing**: Windows DPAPI and Linux TPM2.
 7. **Tamper response**: loud alert if the database or key is tampered with.
-8. **Signed offline knowledge packs** for updating the blocklist and model prior
+8. **Signed offline knowledge packs** (in review, see [docs/PACKS.md](docs/PACKS.md)) for updating the blocklist and model prior
    by hand, with no update server.
 9. **Real prior weights** trained on public datasets, after checking licences.
 10. **Optional TLS server-name inspection** (off by default).
