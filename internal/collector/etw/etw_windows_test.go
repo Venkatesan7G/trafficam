@@ -294,6 +294,9 @@ func TestLiveCapture(t *testing.T) {
 		if !strings.EqualFold(f.Program.Path, exe) {
 			t.Errorf("program path %q, want %q", f.Program.Path, exe)
 		}
+		if f.Program.Parent == "" {
+			t.Errorf("program parent is empty (this test's parent is usually go.exe)")
+		}
 	}
 	in, out, n, _ = sum(func(f event.Flow) bool { return f.Proto == event.UDP && f.Local == udpLocal })
 	if n == 0 || out != 300 {

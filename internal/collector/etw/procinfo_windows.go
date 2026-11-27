@@ -35,6 +35,7 @@ type procInfo struct {
 	services map[uint32]string // PID -> "ServiceA,ServiceB"
 	svcAt    time.Time         // when services was last refreshed
 	snapAt   time.Time         // when the Toolhelp snapshot was last read
+	ppids    map[uint32]uint32 // PID -> parent PID from that snapshot
 	devices  map[string]string // \Device\HarddiskVolume3 -> C:
 	signers  *signerCache
 }
@@ -104,7 +105,7 @@ func (p *procInfo) lookup(pid uint32) event.Program {
 		}
 	}
 	if e.parentPID == 0 {
-		p.fillParentsLocked()
+		e.parentPID = p.parentFromSnapshotLocked(pid)
 	}
 	if e.parent == "" && e.parentPID != 0 {
 		if pe := p.procs[e.parentPID]; pe != nil && pe.path != "" {
@@ -141,28 +142,30 @@ func (p *procInfo) serviceLocked(pid uint32) string {
 	return p.services[pid]
 }
 
-// fillParentsLocked fills parent PIDs from a Toolhelp snapshot (at most every 2 s).
-func (p *procInfo) fillParentsLocked() {
-	if time.Since(p.snapAt) < 2*time.Second {
-		return
+// parentFromSnapshotLocked finds pid's parent in a Toolhelp process
+// snapshot, taking a fresh snapshot (at most every 200 ms) if pid is not in
+// the last one. Needed for processes that started before trafficam did.
+func (p *procInfo) parentFromSnapshotLocked(pid uint32) uint32 {
+	if pp, ok := p.ppids[pid]; ok {
+		return pp
+	}
+	if time.Since(p.snapAt) < 200*time.Millisecond {
+		return 0
 	}
 	p.snapAt = time.Now()
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
-		return
+		return 0
 	}
 	defer windows.CloseHandle(snap)
+	m := map[uint32]uint32{}
 	var pe windows.ProcessEntry32
 	pe.Size = uint32(unsafe.Sizeof(pe))
 	for err = windows.Process32First(snap, &pe); err == nil; err = windows.Process32Next(snap, &pe) {
-		e := p.procs[pe.ProcessID]
-		if e == nil {
-			continue // only fill entries we care about
-		}
-		if e.parentPID == 0 {
-			e.parentPID = pe.ParentProcessID
-		}
+		m[pe.ProcessID] = pe.ParentProcessID
 	}
+	p.ppids = m
+	return m[pid]
 }
 
 // ntToDOS converts \Device\HarddiskVolume3\x to C:\x using the device map.
