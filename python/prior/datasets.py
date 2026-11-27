@@ -35,7 +35,7 @@ def load_ctu13_binetflow(path, label_prefix_bad=("From-Botnet",), label_prefix_o
     rows_raw = []
     with open(path, newline="") as fh:
         for r in csv.DictReader(fh):
-            lab = r["Label"]
+            lab = r["Label"].removeprefix("flow=")  # CTU-13 files write "flow=From-Botnet-..."
             if lab.startswith(label_prefix_bad):
                 y = 1
             elif lab.startswith(label_prefix_ok):
