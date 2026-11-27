@@ -1,0 +1,6 @@
+/trafficam
+*.db
+*.db-wal
+*.db-shm
+*.key
+capture*.jsonl*
