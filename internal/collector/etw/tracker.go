@@ -52,18 +52,19 @@ type connKey struct {
 
 // conn is what we know so far about one conversation.
 type conn struct {
-	prog        event.Program
-	dir         event.Direction
-	dns         string
-	first, last time.Time // first and latest event
-	reportedAt  time.Time // end of the last reported period (zero = never reported)
-	in, out     uint64    // bytes since the last report
-	pkts        uint64    // send+receive events since the last report
-	gotData     bool      // ever received a byte
-	connected   bool      // saw a connect or accept event
-	accepted    bool      // saw an accept event
-	retried     bool      // saw a retransmit/reconnect
-	dirty       bool      // something to report
+	prog          event.Program
+	dir           event.Direction
+	dns           string
+	first, last   time.Time // first and latest event
+	reportedAt    time.Time // end of the last reported period (zero = never reported)
+	in, out       uint64    // bytes since the last report
+	pkts          uint64    // send+receive events since the last report
+	gotData       bool      // ever received a byte
+	connected     bool      // saw a connect or accept event
+	accepted      bool      // saw an accept event
+	retried       bool      // saw a retransmit/reconnect
+	connectFailed bool      // Windows reported the connect attempt failed (refused, timed out...)
+	dirty         bool      // something to report
 }
 
 // tracker is not safe for concurrent use; only the worker goroutine uses it.
@@ -93,6 +94,9 @@ func (t *tracker) onNet(ev netEvent) {
 	}
 	k := connKey{ev.Proto, ev.PID, ev.Local, ev.Remote}
 	c := t.conns[k]
+	if c == nil && ev.Op == opConnectFail {
+		k, c = t.findAttempt(k) // the attempt may be filed under a slightly different local address
+	}
 	if c == nil {
 		if ev.Op == opDisconnect {
 			return // close of a connection we never saw; nothing to report
@@ -129,7 +133,27 @@ func (t *tracker) onNet(ev netEvent) {
 		c.retried = true
 	case opDisconnect:
 		t.report(k, c, true)
+	case opConnectFail:
+		// Windows gave up on this connect (refused, timed out or no
+		// route). Report it now as a failed outbound attempt instead of
+		// waiting for the idle timer.
+		c.connectFailed, c.dir = true, event.Outbound
+		t.report(k, c, true)
 	}
+}
+
+// findAttempt looks for an open, unanswered connect attempt by the same
+// process to the same remote address and port, for a connect-failure event
+// whose local address does not match exactly (for example 0.0.0.0 instead of
+// the address the attempt was sent from). Failures are rare, so a scan is fine.
+func (t *tracker) findAttempt(k connKey) (connKey, *conn) {
+	for ck, c := range t.conns {
+		if ck.Proto == event.TCP && ck.PID == k.PID && ck.Remote == k.Remote && !c.gotData && !c.accepted &&
+			(ck.Local.Port() == k.Local.Port() || !k.Local.Addr().IsValid() || k.Local.Addr().IsUnspecified() || k.Local.Port() == 0) {
+			return ck, c
+		}
+	}
+	return k, nil
 }
 
 // onDNS handles one finished DNS lookup: remember the answers for labelling
@@ -220,7 +244,7 @@ func (t *tracker) report(k connKey, c *conn, final bool) {
 // A connection that was already open when trafficam started (no connect
 // event, no retries) is not counted as failed.
 func (c *conn) failed() bool {
-	return !c.accepted && !c.gotData && c.retried
+	return c.connectFailed || (!c.accepted && !c.gotData && c.retried)
 }
 
 // guessDirection decides who started a conversation from its first event.
