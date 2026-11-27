@@ -19,7 +19,7 @@ import (
 )
 
 // DBSchemaVersion is the version of the tables below (not of event.Minute).
-const DBSchemaVersion = 1
+const DBSchemaVersion = 2
 
 // ErrCannotOpen means the file exists but the key does not unlock it: wrong
 // key, corruption, or tampering. The caller decides what to do (the planned
@@ -57,7 +57,32 @@ func Open(path string, key []byte) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// migrations[i] upgrades the database from schema version i+1 to i+2.
+// Never edit an old entry; append a new one and bump DBSchemaVersion.
+var migrations = []string{
+	// v1 -> v2: parent/signer/ASN/country/duration for the model, plus the
+	// baseline "seen" table and the install timestamp.
+	`ALTER TABLE minutes ADD COLUMN prog_parent TEXT NOT NULL DEFAULT '';
+ALTER TABLE minutes ADD COLUMN prog_signer TEXT NOT NULL DEFAULT '';
+ALTER TABLE minutes ADD COLUMN asn INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE minutes ADD COLUMN country TEXT NOT NULL DEFAULT '';
+ALTER TABLE minutes ADD COLUMN dur_ms INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE seen (
+  prog_key   TEXT    NOT NULL,
+  host       TEXT    NOT NULL,
+  first_seen INTEGER NOT NULL,   -- unix seconds
+  last_seen  INTEGER NOT NULL,
+  days       INTEGER NOT NULL,   -- number of distinct UTC days with contact
+  last_day   INTEGER NOT NULL,   -- unix day number of the latest contact
+  minutes    INTEGER NOT NULL,   -- number of minute rows
+  PRIMARY KEY (prog_key, host)
+);
+CREATE INDEX seen_prog ON seen(prog_key);
+INSERT OR IGNORE INTO meta(k,v) VALUES('installed_at', CAST(strftime('%s','now') AS TEXT));`,
+}
+
 func (s *Store) migrate() error {
+	// Version 1 base tables.
 	_, err := s.db.Exec(`
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS minutes (
@@ -81,19 +106,46 @@ CREATE TABLE IF NOT EXISTS minutes (
 );
 CREATE INDEX IF NOT EXISTS minutes_start ON minutes(start);
 CREATE INDEX IF NOT EXISTS minutes_prog  ON minutes(prog_key, start);
-INSERT OR IGNORE INTO meta(k,v) VALUES('db_schema', '` + fmt.Sprint(DBSchemaVersion) + `');
+INSERT OR IGNORE INTO meta(k,v) VALUES('db_schema', '1');
 `)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrCannotOpen, err)
 	}
-	var v string
-	if err := s.db.QueryRow(`SELECT v FROM meta WHERE k='db_schema'`).Scan(&v); err != nil {
+	var v int
+	var vs string
+	if err := s.db.QueryRow(`SELECT v FROM meta WHERE k='db_schema'`).Scan(&vs); err != nil {
 		return err
 	}
-	if v != fmt.Sprint(DBSchemaVersion) {
-		return fmt.Errorf("store: database schema %s is not supported by this build (expects %d)", v, DBSchemaVersion)
+	fmt.Sscan(vs, &v)
+	if v > DBSchemaVersion || v < 1 {
+		return fmt.Errorf("store: database schema %q is not supported by this build (expects <= %d)", vs, DBSchemaVersion)
+	}
+	for ; v < DBSchemaVersion; v++ { // each step in its own transaction
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(migrations[v-1]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("store: migrating schema %d->%d: %w", v, v+1, err)
+		}
+		if _, err := tx.Exec(`UPDATE meta SET v=? WHERE k='db_schema'`, fmt.Sprint(v+1)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// InstalledAt is when this database was first created (the start of the
+// learning ramp). For databases upgraded from v1 it is the upgrade time.
+func (s *Store) InstalledAt() (time.Time, error) {
+	var sec int64
+	err := s.db.QueryRow(`SELECT CAST(v AS INTEGER) FROM meta WHERE k='installed_at'`).Scan(&sec)
+	return time.Unix(sec, 0).UTC(), err
 }
 
 // Scored pairs a row with the scorer's result so both are stored together.
@@ -114,8 +166,8 @@ func (s *Store) Insert(rows []Scored) error {
 	}
 	defer tx.Rollback()
 	st, err := tx.Prepare(`INSERT INTO minutes
-(start,prog_key,prog_name,proto,dir,host,remote_ip,port,flows,packets,bytes_in,bytes_out,failed,score,alerted,schema_v)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+(start,prog_key,prog_name,proto,dir,host,remote_ip,port,flows,packets,bytes_in,bytes_out,failed,score,alerted,schema_v,prog_parent,prog_signer,asn,country,dur_ms)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -124,7 +176,8 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 		m := r.Minute
 		if _, err := st.Exec(m.Start.Unix(), m.Program.Key(), m.Program.Name, string(m.Proto), string(m.Dir),
 			m.Host, m.RemoteIP, int(m.Port), m.Flows, m.Packets, m.BytesIn, m.BytesOut, m.FailedCount,
-			r.Score, boolInt(r.Alerted), m.V); err != nil {
+			r.Score, boolInt(r.Alerted), m.V,
+			m.Program.Parent, m.Program.Signer, m.ASN, m.Country, m.DurationMs); err != nil {
 			return err
 		}
 	}
@@ -134,7 +187,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 // Since returns stored rows with start >= since, oldest first. The model's
 // nightly training reads its 30-day window with this.
 func (s *Store) Since(since time.Time) ([]Scored, error) {
-	rows, err := s.db.Query(`SELECT start,prog_key,prog_name,proto,dir,host,remote_ip,port,flows,packets,bytes_in,bytes_out,failed,score,alerted,schema_v
+	rows, err := s.db.Query(`SELECT start,prog_key,prog_name,proto,dir,host,remote_ip,port,flows,packets,bytes_in,bytes_out,failed,score,alerted,schema_v,prog_parent,prog_signer,asn,country,dur_ms
 FROM minutes WHERE start >= ? ORDER BY start, id`, since.Unix())
 	if err != nil {
 		return nil, err
@@ -151,7 +204,8 @@ FROM minutes WHERE start >= ? ORDER BY start, id`, since.Unix())
 			alerted         int
 		)
 		if err := rows.Scan(&start, &key, &m.Program.Name, &proto, &dir, &m.Host, &m.RemoteIP, &port,
-			&m.Flows, &m.Packets, &m.BytesIn, &m.BytesOut, &m.FailedCount, &score, &alerted, &m.V); err != nil {
+			&m.Flows, &m.Packets, &m.BytesIn, &m.BytesOut, &m.FailedCount, &score, &alerted, &m.V,
+			&m.Program.Parent, &m.Program.Signer, &m.ASN, &m.Country, &m.DurationMs); err != nil {
 			return nil, err
 		}
 		m.Start = time.Unix(start, 0).UTC()
@@ -185,3 +239,5 @@ func boolInt(b bool) int {
 	}
 	return 0
 }
+
+func isNoRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }
