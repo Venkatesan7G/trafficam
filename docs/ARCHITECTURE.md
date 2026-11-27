@@ -17,7 +17,7 @@
 | `internal/score` | **`Scorer` interface** the model implements, plus `Notifier` and a no-op scorer. |
 | `internal/store` | Encrypted SQLite (SQLCipher), WAL, 32-byte raw key. |
 | `internal/keyseal` | `Provider` interface for the DB key, sealed to the machine. Portable baseline included. |
-| `internal/enrich` | Offline CIDR -> ASN/country table; fills `Minute.ASN`/`Country`. |
+| `internal/enrich` | Offline CIDR -> ASN/country/owner table (binary search, ~15 ns a lookup); fills `Minute.ASN`/`Country`. |
 | `internal/blocklist` | Plain-text domain/IP/CIDR lists (known-bad snapshot, watch list, ignore list). |
 | `internal/baseline` | Per (program, destination) counters: first seen, days seen, auto-absorb after 3 days. |
 | `internal/rules` | Always-alert rules, merged with the model by one `score.Scorer`. |
@@ -68,7 +68,7 @@ as a `service.Task` (see the comment in `cmd/trafficam/main.go`).
   as you. Windows DPAPI/TPM and Linux TPM2 providers should replace it.
 - Tamper handling: the store reports `ErrCannotOpen`; the loud-alert and
   self-destruct policy is not implemented yet.
-- No offline ASN/country data file is shipped; `-asn` takes a CSV someone builds from a public snapshot.
+- The ASN/country table is built from IPtoASN by `cmd/asnbuild` (docs/ASN.md); it is not committed to git and will reach users inside a knowledge pack.
 - The store allows one connection, so a long history read for training briefly delays inserts.
 - Real notifications (desktop toasts) are per-OS; only a log notifier exists.
 - `Program.Service` (schema v3) holds the Windows service / systemd unit; `Key()` appends it so services sharing svchost.exe get separate baselines.

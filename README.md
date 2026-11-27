@@ -131,8 +131,12 @@ evil.example.com            # a domain; also matches sub.evil.example.com
 cdn.example.net firefox     # applies only to the program "firefox"
 ```
 
-The `-asn` file is CSV, one network per line: `cidr,asn,country`, for example
-`93.184.216.0/24,15133,US`.
+The `-asn` file is CSV (optionally gzip-compressed), one network per line:
+`cidr,asn,country[,owner name]`, for example `93.184.216.0/24,15133,US`. If you
+don't pass `-asn`, trafficam uses `asn.csv.gz` (or `asn.csv`) from its data
+folder when there is one. The full table (about 700,000 networks, 5 MB) is
+built from the public-domain IPtoASN data with `cmd/asnbuild`; see
+[docs/ASN.md](docs/ASN.md).
 
 ## How it works
 
