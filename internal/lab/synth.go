@@ -33,7 +33,7 @@ func Synthetic(start time.Time, days int, seed uint64) *Data {
 	}
 	sites := make([]string, 600)
 	for i := range sites {
-		sites[i] = fmt.Sprintf("site%03d.example.com", i)
+		sites[i] = fmt.Sprintf("www.site%03d.test", i) // separate domains, like real sites
 	}
 	progs := []prog{
 		{event.Program{Name: "firefox", Path: "/usr/lib/firefox/firefox", Parent: "gnome-shell", Signer: "deb:firefox"}, sites, 25 * time.Second, true, 443, event.TCP, 7, 10, 0},
