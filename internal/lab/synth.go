@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"strings"
 	"time"
 
 	"github.com/Venkatesan7G/trafficam/internal/event"
@@ -62,6 +63,23 @@ func Synthetic(start time.Time, days int, seed uint64) *Data {
 					Host: h, RemoteIP: fakeIP(h), Port: p.port, Flows: flows, Packets: uint64(flows) * uint64(4+rng.IntN(20)),
 					BytesOut: uint64(math.Exp(p.outMu + rng.NormFloat64()*0.6)), BytesIn: uint64(math.Exp(p.inMu + rng.NormFloat64()*0.8)),
 					ASN: 64500 + uint32(len(h)%7), Country: "DE", DurationMs: uint64(500 + rng.IntN(5000)),
+				})
+			}
+		}
+		// Benign novelty: now and then a quiet program legitimately starts
+		// using a new server (a new mirror, a new CDN name). Real PCs do this,
+		// and it is what the new-destination rule's false alarms look like.
+		for pi, p := range progs[1:] {
+			if di < p.fromDay || rng.Float64() > 0.2 {
+				continue
+			}
+			h := fmt.Sprintf("edge%d-%d.%s", di, pi, p.hosts[0][strings.Index(p.hosts[0], ".")+1:])
+			t := day.Add(time.Duration(9*3600+rng.IntN(10*3600)) * time.Second)
+			for k := 0; k < 1+rng.IntN(3); k++ {
+				rows = append(rows, event.Minute{
+					V: event.SchemaVersion, Start: t.Add(time.Duration(k) * 7 * time.Minute).UTC().Truncate(time.Minute), Program: p.p,
+					Proto: p.proto, Dir: event.Outbound, Host: h, RemoteIP: fakeIP(h), Port: p.port, Flows: 1, Packets: 10,
+					BytesOut: uint64(math.Exp(p.outMu)), BytesIn: uint64(math.Exp(p.inMu)), ASN: 64500, Country: "DE", DurationMs: 900,
 				})
 			}
 		}

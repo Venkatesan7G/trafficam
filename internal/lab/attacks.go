@@ -48,7 +48,7 @@ type quietProg struct {
 	port  uint16
 }
 
-func pickPrograms(d *Data, before time.Time) (attackCtx, error) {
+func pickPrograms(d *Data, before time.Time, minAge time.Duration) (attackCtx, error) {
 	type st struct {
 		p     event.Program
 		hosts map[string]int
@@ -80,7 +80,7 @@ func pickPrograms(d *Data, before time.Time) (attackCtx, error) {
 	var quiet []*st
 	var busy *st
 	for _, s := range all {
-		settled := before.Sub(s.first) >= 4*24*time.Hour
+		settled := before.Sub(s.first) >= minAge
 		if settled && len(s.hosts) <= 5 && s.rows >= 50 {
 			quiet = append(quiet, s)
 		}
@@ -117,6 +117,13 @@ type InjectOptions struct {
 	At   time.Time // when the first attack starts; zero = 75% through the recording
 	Seed uint64
 	Only []string // attack IDs to plant; empty = all
+	// MinHistory is how long the install must have run before the attacks,
+	// and how old a program must be to count as quiet [4 days]. Tuning uses
+	// a shorter one to plant an "early" wave right after install.
+	MinHistory time.Duration
+	IDSuffix   string        // appended to every attack ID (to plant several waves)
+	Prev       Labels        // labels of d's rows from an earlier wave, kept
+	Gap        time.Duration // time between attacks [7h]
 }
 
 // Inject plants every attack scenario into a copy of d, one every 7 hours
@@ -130,10 +137,16 @@ func Inject(d *Data, opt InjectOptions) (*Data, Labels, []Attack, error) {
 	if at.IsZero() {
 		at = first.Add(last.Sub(first) * 3 / 4).Truncate(time.Hour)
 	}
-	if at.Sub(d.InstallTime()) < 4*24*time.Hour {
-		return nil, nil, nil, fmt.Errorf("lab: attacks start %s, under 4 days after the install; record longer (at least 6 days, ideally 14+)", at.Format("2006-01-02 15:04"))
+	if opt.MinHistory <= 0 {
+		opt.MinHistory = 4 * 24 * time.Hour
 	}
-	c, err := pickPrograms(d, at)
+	if opt.Gap <= 0 {
+		opt.Gap = 7 * time.Hour
+	}
+	if at.Sub(d.InstallTime()) < opt.MinHistory {
+		return nil, nil, nil, fmt.Errorf("lab: attacks start %s, under %s after the install; record longer (at least 6 days, ideally 14+)", at.Format("2006-01-02 15:04"), opt.MinHistory)
+	}
+	c, err := pickPrograms(d, at, opt.MinHistory)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -144,6 +157,17 @@ func Inject(d *Data, opt InjectOptions) (*Data, Labels, []Attack, error) {
 	// names is no longer "quiet"). With only one quiet program they share it,
 	// and the report shows the effect.
 	nq := 0
+	// Each wave uses its own server names, or a later wave's "new" server
+	// would already be known from the earlier one.
+	tag := ""
+	if opt.IDSuffix != "" {
+		tag = "w" + strings.Trim(strings.Map(func(r rune) rune {
+			if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+				return r
+			}
+			return '-'
+		}, strings.ToLower(opt.IDSuffix)), "-") + "-"
+	}
 	q := func() quietProg { p := c.quiet[nq%len(c.quiet)]; nq++; return p }
 	type gen struct {
 		a Attack
@@ -152,15 +176,15 @@ func Inject(d *Data, opt InjectOptions) (*Data, Labels, []Attack, error) {
 	gens := []gen{
 		{Attack{ID: "beacon-quiet", Kind: "beacon", What: "the quiet program calls a new server every ~5 min for 6 h with tiny requests", Hijacked: true},
 			func(a *Attack) []event.Minute {
-				return beacon(rng, a.Start, q().p, "cdn-sync-check.example.net", 443, 6*time.Hour, 5*time.Minute)
+				return beacon(rng, a.Start, q().p, tag+"cdn-sync-check.example.net", 443, 6*time.Hour, 5*time.Minute)
 			}},
 		{Attack{ID: "beacon-browser", Kind: "beacon", What: "the browser calls a new site every ~2 min for 6 h with tiny requests", Hard: true, Hijacked: true},
 			func(a *Attack) []event.Minute {
-				return beacon(rng, a.Start, c.busy, "static-assets-cache.example.org", 443, 6*time.Hour, 2*time.Minute)
+				return beacon(rng, a.Start, c.busy, tag+"static-assets-cache.example.org", 443, 6*time.Hour, 2*time.Minute)
 			}},
 		{Attack{ID: "exfil-new", Kind: "exfil", What: "the quiet program uploads ~600 MB to a new server over 30 min", Hijacked: true},
 			func(a *Attack) []event.Minute {
-				return exfil(rng, a.Start, q().p, "files-drop.example.net", 443, 30, 20e6)
+				return exfil(rng, a.Start, q().p, tag+"files-drop.example.net", 443, 30, 20e6)
 			}},
 		{Attack{ID: "exfil-known", Kind: "exfil", What: "the quiet program uploads ~600 MB to a server it already uses (abused cloud account)", Hard: true, Hijacked: true},
 			func(a *Attack) []event.Minute {
@@ -169,22 +193,23 @@ func Inject(d *Data, opt InjectOptions) (*Data, Labels, []Attack, error) {
 			}},
 		{Attack{ID: "exfil-browser", Kind: "exfil", What: "the browser uploads ~600 MB to a new site over 30 min", Hard: true, Hijacked: true},
 			func(a *Attack) []event.Minute {
-				return exfil(rng, a.Start, c.busy, "upload-share.example.org", 443, 30, 20e6)
+				return exfil(rng, a.Start, c.busy, tag+"upload-share.example.org", 443, 30, 20e6)
 			}},
 		{Attack{ID: "dga", Kind: "dga", What: "the quiet program looks up 300 random-looking names (most fail), then connects to one", Hijacked: true},
 			func(a *Attack) []event.Minute { return dga(rng, a.Start, q().p) }},
 		{Attack{ID: "dns-tunnel", Kind: "dns-tunnel", What: "the quiet program sends data out as 2,000 long DNS names under one domain", Hijacked: true},
-			func(a *Attack) []event.Minute { return dnsTunnel(rng, a.Start, q().p, "t.example.net") }},
+			func(a *Attack) []event.Minute { return dnsTunnel(rng, a.Start, q().p, tag+"t.example.net") }},
 		{Attack{ID: "scan", Kind: "scan", What: "the quiet program tries 250 LAN addresses on SMB/SSH/RDP, nearly all refused", Hijacked: true},
 			func(a *Attack) []event.Minute { return scan(rng, a.Start, q().p) }},
 		{Attack{ID: "dropper", Kind: "new-program", What: "a never-seen program in a temp folder beacons to a new server"},
 			func(a *Attack) []event.Minute {
-				p := event.Program{Name: "svchelper", Path: "/tmp/.cache/svchelper", Parent: c.busy.Name}
-				return beacon(rng, a.Start, p, "update-check.example.com", 8443, 3*time.Hour, 3*time.Minute)
+				p := event.Program{Name: "svchelper", Path: "/tmp/.cache/" + tag + "svchelper", Parent: c.busy.Name}
+				return beacon(rng, a.Start, p, tag+"update-check.example.com", 8443, 3*time.Hour, 3*time.Minute)
 			}},
 	}
 	out := &Data{Rows: append([]event.Minute(nil), d.Rows...), Installed: d.Installed, Source: d.Source + " + planted attacks"}
 	labels := make([]string, len(out.Rows))
+	copy(labels, opt.Prev)
 	var attacks []Attack
 	t := at
 	for _, g := range gens {
@@ -192,6 +217,7 @@ func Inject(d *Data, opt InjectOptions) (*Data, Labels, []Attack, error) {
 			continue
 		}
 		a := g.a
+		a.ID += opt.IDSuffix
 		a.Start = t
 		rows := g.f(&a)
 		a.Rows = len(rows)
@@ -201,7 +227,7 @@ func Inject(d *Data, opt InjectOptions) (*Data, Labels, []Attack, error) {
 			labels = append(labels, a.ID)
 		}
 		out.Rows = append(out.Rows, rows...)
-		t = t.Add(7 * time.Hour)
+		t = t.Add(opt.Gap)
 	}
 	// Sort rows and labels together.
 	idx := make([]int, len(out.Rows))
