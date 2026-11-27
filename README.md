@@ -202,7 +202,7 @@ Roughly in order:
 4. **Desktop notifications** on both systems.
 5. **A learning ramp** you can see: Listening, Settling in, Watching, Guarding.
 6. **Stronger key sealing**: Windows TPM/DPAPI and Linux TPM2 (in review, see [docs/KEYS.md](docs/KEYS.md)).
-7. **Tamper response**: loud alert if the database or key is tampered with.
+7. **Tamper response**: loud alert, then self-destruct, if the database or key is tampered with (in review, see [docs/TAMPER.md](docs/TAMPER.md)).
 8. **Signed offline knowledge packs** for updating the blocklist and model prior
    by hand, with no update server.
 9. **Real prior weights** trained on public datasets, after checking licences.

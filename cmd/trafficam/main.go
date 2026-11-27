@@ -10,6 +10,7 @@
 //	trafficam dump   [-data DIR]               print what is stored
 //	trafficam live   [-data DIR]               watch this PC's real traffic (needs admin/root)
 //	trafficam service install|uninstall|start|stop   (Windows) run "live" as a Windows service
+//	trafficam tamper status|ack [-data DIR]   show or dismiss a tamper alert (docs/TAMPER.md)
 //
 // Optional offline lists, all off unless a file is given (see docs/ARCHITECTURE.md):
 //
@@ -21,6 +22,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -42,6 +44,7 @@ import (
 	"github.com/Venkatesan7G/trafficam/internal/rules"
 	"github.com/Venkatesan7G/trafficam/internal/service"
 	"github.com/Venkatesan7G/trafficam/internal/store"
+	"github.com/Venkatesan7G/trafficam/internal/tamper"
 )
 
 func main() {
@@ -49,7 +52,7 @@ func main() {
 		if runningAsService() { // started by the Windows Service Control Manager
 			os.Args = append(os.Args, "service", "run")
 		} else {
-			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service [flags]")
+			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service|tamper [flags]")
 			os.Exit(2)
 		}
 	}
@@ -57,6 +60,13 @@ func main() {
 	if cmd == "service" {
 		// "trafficam service <action> [flags]": the action comes before the flags.
 		if err := serviceCommand(args); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if cmd == "tamper" {
+		if err := tamperCommand(args); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -71,6 +81,7 @@ func main() {
 	fs.StringVar(&lf.watch, "watch", "", "your alert-anyway list")
 	fs.StringVar(&lf.ignore, "ignore", "", "your ignore list")
 	fs.StringVar(&lf.asn, "asn", "", "offline ASN/country table (CSV)")
+	fs.StringVar(&lf.onTamper, "on-tamper", "destroy", "if the key or database is tampered with: destroy, or quarantine (move aside)")
 	fs.StringVar(&lf.prior, "prior", "", "head C prior-risk weights (TCW1 file); empty = head C off")
 	fs.Parse(args)
 
@@ -137,23 +148,43 @@ func doRecord(ctx context.Context, path string, n int) error {
 	return err
 }
 
-func openStore(dir string) (*store.Store, error) {
-	// The key is sealed with the strongest method this PC offers (TPM, then
-	// DPAPI on Windows or the machine id on Linux); see docs/KEYS.md.
-	kp := keyseal.Default(filepath.Join(dir, "db.key"))
-	kp.Logf = func(format string, args ...any) { slog.Info(fmt.Sprintf(format, args...)) }
-	key, err := kp.Key()
+// guardFor sets up the tamper response for a data folder. The key is sealed
+// with the strongest method this PC offers (TPM, then DPAPI on Windows or the
+// machine id on Linux); see docs/KEYS.md and docs/TAMPER.md.
+func guardFor(dir string, lf listFiles) (*tamper.Guard, error) {
+	policy, err := tamper.ParsePolicy(lf.onTamper)
 	if err != nil {
 		return nil, err
 	}
-	if m, err := kp.Method(); err == nil {
-		slog.Info("database key protected", "method", m)
+	kp := keyseal.Default(filepath.Join(dir, "db.key"))
+	kp.Logf = func(format string, args ...any) { slog.Info(fmt.Sprintf(format, args...)) }
+	return &tamper.Guard{
+		Dir: dir, Key: kp, DBPath: filepath.Join(dir, "trafficam.db"),
+		Learned: []string{filepath.Join(dir, "model.tcw")}, Policy: policy,
+	}, nil
+}
+
+// openStoreReadOnly is for commands that only look (dump): tampering is
+// reported, but nothing is destroyed; the watcher itself handles it.
+func openStoreReadOnly(dir string) (*store.Store, error) {
+	g, err := guardFor(dir, listFiles{})
+	if err != nil {
+		return nil, err
 	}
-	return store.Open(filepath.Join(dir, "trafficam.db"), key)
+	g.RaisePending()
+	key, err := g.Check()
+	if err != nil {
+		return nil, err
+	}
+	if key == nil {
+		return nil, fmt.Errorf("no database in %s yet", dir)
+	}
+	return store.Open(g.DBPath, key)
 }
 
 // listFiles are the optional offline files named on the command line.
-type listFiles struct{ blocklist, watch, ignore, asn, prior string }
+// onTamper is the -on-tamper policy (destroy or quarantine).
+type listFiles struct{ blocklist, watch, ignore, asn, prior, onTamper string }
 
 func loadList(path string) (*blocklist.List, error) {
 	if path == "" {
@@ -162,13 +193,41 @@ func loadList(path string) (*blocklist.List, error) {
 	return blocklist.Load(path)
 }
 
+// run runs the pipeline with the tamper response around it: tampering found
+// at start or while running is handled (alert, destroy, fresh start) and the
+// pipeline starts again on the new, empty database.
 func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, lf listFiles) error {
+	g, err := guardFor(dir, lf)
+	if err != nil {
+		return err
+	}
+	for attempt := 0; ; attempt++ {
+		err := runOnce(ctx, g, c, oneShot, lf)
+		var d *tamper.Detected
+		if !errors.As(err, &d) || attempt >= 3 {
+			return err // attempt cap: a disk that keeps "tampering" is not worth a loop
+		}
+		g.Trip(d.What, d.Err) // the store is closed by now
+	}
+}
+
+func runOnce(ctx context.Context, g *tamper.Guard, c collector.Collector, oneShot bool, lf listFiles) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	st, err := openStore(dir)
+	dir := g.Dir
+	st, err := g.Open()
 	if err != nil {
 		return err
 	}
 	defer st.Close()
+	if m, err := g.Key.Method(); err == nil {
+		log.Info("database key protected", "method", m)
+	}
+	watch, err := g.Watch()
+	if err != nil {
+		return err
+	}
+	ctx, stopForTamper := context.WithCancelCause(ctx)
+	defer stopForTamper(nil)
 
 	var lists [3]*blocklist.List
 	for i, p := range []string{lf.blocklist, lf.watch, lf.ignore} {
@@ -209,6 +268,13 @@ func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, l
 		return err
 	}
 	var tasks []service.Task
+	// Every 30 s: has someone changed, swapped or deleted our key or database?
+	tasks = append(tasks, service.Every("tamper-watch", 30*time.Second, 30*time.Second, func(context.Context) error {
+		if err := watch.Check(); err != nil {
+			stopForTamper(err)
+		}
+		return nil
+	}))
 	tasks = append(tasks, service.Task{Name: "nightly-training",
 		Run: func(ctx context.Context) error { learner.Loop(ctx); return nil }})
 
@@ -234,7 +300,11 @@ func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, l
 	if err != nil {
 		return err
 	}
-	if err := svc.Run(ctx); err != nil {
+	err = svc.Run(ctx)
+	if cause := context.Cause(ctx); errors.Is(cause, tamper.ErrTampered) {
+		return cause
+	}
+	if err != nil {
 		return err
 	}
 	fmt.Printf("done: flows=%d rows=%d dropped=%d alerts=%d panics=%d\n",
@@ -243,8 +313,38 @@ func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, l
 	return nil
 }
 
+// tamperCommand: "trafficam tamper status|ack [-data DIR]".
+func tamperCommand(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: trafficam tamper status|ack [-data DIR]")
+	}
+	fs := flag.NewFlagSet("tamper", flag.ExitOnError)
+	data := fs.String("data", defaultDataDir(), "data folder")
+	fs.Parse(args[1:])
+	switch args[0] {
+	case "status":
+		if text, ok := tamper.Pending(*data); ok {
+			fmt.Print(text)
+			return nil
+		}
+		fmt.Println("no tamper alert")
+		return nil
+	case "ack":
+		if _, ok := tamper.Pending(*data); !ok {
+			fmt.Println("no tamper alert to dismiss")
+			return nil
+		}
+		if err := tamper.Ack(*data); err != nil {
+			return err
+		}
+		fmt.Println("tamper alert dismissed")
+		return nil
+	}
+	return fmt.Errorf("unknown tamper action %q (want status or ack)", args[0])
+}
+
 func dump(dir string) error {
-	st, err := openStore(dir)
+	st, err := openStoreReadOnly(dir)
 	if err != nil {
 		return err
 	}

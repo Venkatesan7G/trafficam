@@ -67,8 +67,9 @@ as a `service.Task` (see the comment in `cmd/trafficam/main.go`).
 - The database key is sealed with the TPM where there is one (Windows: TPM plus
   DPAPI, else DPAPI; Linux: TPM2, else the machine id). No method stops malware
   already running as administrator/root. Details: [KEYS.md](KEYS.md).
-- Tamper handling: the store reports `ErrCannotOpen`; the loud-alert and
-  self-destruct policy is not implemented yet.
+- Tamper response (`internal/tamper`): loud alert, then the key and history are
+  destroyed and a fresh database starts. It cannot stop an attacker with admin
+  rights. Details: [TAMPER.md](TAMPER.md).
 - No offline ASN/country data file is shipped; `-asn` takes a CSV someone builds from a public snapshot.
 - The store allows one connection, so a long history read for training briefly delays inserts.
 - Real notifications (desktop toasts) are per-OS; only a log notifier exists.
