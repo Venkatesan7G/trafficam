@@ -7,6 +7,7 @@
 package aggregate
 
 import (
+	"net/netip"
 	"sort"
 	"time"
 
@@ -22,8 +23,15 @@ type key struct {
 	port  uint16
 }
 
+// Enricher adds offline network facts about an address. See package enrich.
+type Enricher interface {
+	Lookup(ip netip.Addr) (asn uint32, country string)
+}
+
 // Aggregator is NOT safe for concurrent use; the service owns it from one goroutine.
 type Aggregator struct {
+	// Enrich, if set, fills ASN and Country on each new row (one lookup per row).
+	Enrich  Enricher
 	rows    map[key]*event.Minute
 	maxSeen time.Time // newest event time seen so far
 }
@@ -43,8 +51,12 @@ func (a *Aggregator) Add(f event.Flow) {
 			V: event.SchemaVersion, Start: start, Program: f.Program,
 			Proto: f.Proto, Dir: f.Dir, Host: k.host, Port: k.port,
 		}
+		if a.Enrich != nil && f.Remote.Addr().IsValid() {
+			m.ASN, m.Country = a.Enrich.Lookup(f.Remote.Addr())
+		}
 		a.rows[k] = m
 	}
+	m.DurationMs += uint64(f.Duration / time.Millisecond)
 	m.Flows++
 	m.Packets += f.Packets
 	m.BytesIn += f.BytesIn

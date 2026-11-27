@@ -22,7 +22,8 @@ import (
 )
 
 // SchemaVersion is the version of the Flow and Minute formats.
-const SchemaVersion = 1
+// v2 added Minute.ASN, Country and DurationMs, and Flow.Duration.
+const SchemaVersion = 2
 
 // Proto is the transport protocol of a flow.
 type Proto string
@@ -74,6 +75,7 @@ type Flow struct {
 	BytesIn     uint64         `json:"bin,omitempty"`
 	BytesOut    uint64         `json:"bout,omitempty"`
 	Packets     uint64         `json:"pkts,omitempty"`
+	Duration    time.Duration  `json:"dur,omitempty"` // how long the connection lasted, if the collector knows
 	Established bool           `json:"est,omitempty"` // TCP handshake completed (distinguishes scans from real connections)
 }
 
@@ -104,5 +106,8 @@ type Minute struct {
 	Packets     uint64    `json:"pkts"`
 	BytesIn     uint64    `json:"bin"`
 	BytesOut    uint64    `json:"bout"`
+	ASN         uint32    `json:"asn,omitempty"`    // network owner of RemoteIP, from the offline database (0 = unknown)
+	Country     string    `json:"cc,omitempty"`     // ISO country code of RemoteIP (empty = unknown)
+	DurationMs  uint64    `json:"dur_ms,omitempty"` // total connection time across merged flows
 	FailedCount uint32    `json:"failed,omitempty"` // TCP attempts that never established
 }

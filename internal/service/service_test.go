@@ -130,3 +130,24 @@ func TestLiveQueueDropsInsteadOfBlocking(t *testing.T) {
 		t.Fatalf("dropped=%d", s.Stats.Dropped.Load())
 	}
 }
+
+func TestTasksRunAreRestartedAndStopWithPipeline(t *testing.T) {
+	var runs, ticks atomic.Int32
+	tasks := []Task{
+		{Name: "crashy", Run: func(ctx context.Context) error {
+			if runs.Add(1) == 1 {
+				panic("task crashed")
+			}
+			<-ctx.Done()
+			return nil
+		}},
+		Every("tick", 0, time.Millisecond, func(context.Context) error { ticks.Add(1); return nil }),
+	}
+	s, _ := New(Config{Collector: synth(2000, 0), Store: newStore(t), OneShot: true, Tasks: tasks, RestartBackoff: time.Millisecond, Log: quiet()})
+	if err := s.Run(context.Background()); err != nil { // must return: tasks are stopped at the end
+		t.Fatal(err)
+	}
+	if runs.Load() != 2 || s.Stats.Panics.Load() != 1 || ticks.Load() == 0 {
+		t.Fatalf("runs=%d panics=%d ticks=%d", runs.Load(), s.Stats.Panics.Load(), ticks.Load())
+	}
+}
