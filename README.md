@@ -201,7 +201,7 @@ Roughly in order:
    test VM, and an ablation of rules versus rules plus model.
 4. **Desktop notifications** on both systems.
 5. **A learning ramp** you can see: Listening, Settling in, Watching, Guarding.
-6. **Stronger key sealing**: Windows DPAPI and Linux TPM2.
+6. **Stronger key sealing**: Windows TPM/DPAPI and Linux TPM2 (in review, see [docs/KEYS.md](docs/KEYS.md)).
 7. **Tamper response**: loud alert if the database or key is tampered with.
 8. **Signed offline knowledge packs** for updating the blocklist and model prior
    by hand, with no update server.

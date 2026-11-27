@@ -138,9 +138,16 @@ func doRecord(ctx context.Context, path string, n int) error {
 }
 
 func openStore(dir string) (*store.Store, error) {
-	key, err := (&keyseal.MachineIDProvider{Path: filepath.Join(dir, "db.key")}).Key()
+	// The key is sealed with the strongest method this PC offers (TPM, then
+	// DPAPI on Windows or the machine id on Linux); see docs/KEYS.md.
+	kp := keyseal.Default(filepath.Join(dir, "db.key"))
+	kp.Logf = func(format string, args ...any) { slog.Info(fmt.Sprintf(format, args...)) }
+	key, err := kp.Key()
 	if err != nil {
 		return nil, err
+	}
+	if m, err := kp.Method(); err == nil {
+		slog.Info("database key protected", "method", m)
 	}
 	return store.Open(filepath.Join(dir, "trafficam.db"), key)
 }
