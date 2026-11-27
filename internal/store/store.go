@@ -20,7 +20,7 @@ import (
 )
 
 // DBSchemaVersion is the version of the tables below (not of event.Minute).
-const DBSchemaVersion = 3
+const DBSchemaVersion = 4
 
 // ErrCannotOpen means the file exists but the key does not unlock it: wrong
 // key, corruption, or tampering. The caller decides what to do (the planned
@@ -82,6 +82,30 @@ CREATE INDEX seen_prog ON seen(prog_key);
 INSERT OR IGNORE INTO meta(k,v) VALUES('installed_at', CAST(strftime('%s','now') AS TEXT));`,
 	// v2 -> v3: the OS service a process hosts (Windows service / systemd unit).
 	`ALTER TABLE minutes ADD COLUMN prog_service TEXT NOT NULL DEFAULT '';`,
+	// v3 -> v4: alerts shown to the user, with their reasons and whether the
+	// user has seen them (see alerts.go).
+	`CREATE TABLE alerts (
+  id        INTEGER PRIMARY KEY,
+  at        INTEGER NOT NULL,   -- unix seconds when the alert was raised
+  start     INTEGER NOT NULL,   -- the minute row it is about
+  prog_key  TEXT    NOT NULL,
+  prog_name TEXT    NOT NULL,
+  prog_path TEXT    NOT NULL,
+  prog_svc  TEXT    NOT NULL,
+  proto     TEXT    NOT NULL,
+  dir       TEXT    NOT NULL,
+  host      TEXT    NOT NULL,
+  remote_ip TEXT    NOT NULL,
+  port      INTEGER NOT NULL,
+  asn       INTEGER NOT NULL,
+  country   TEXT    NOT NULL,
+  score     REAL    NOT NULL,
+  reasons   TEXT    NOT NULL,   -- JSON array of strings
+  phase     TEXT    NOT NULL,
+  state     TEXT    NOT NULL DEFAULT 'new',
+  state_at  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX alerts_at ON alerts(at);`,
 }
 
 func (s *Store) migrate() error {

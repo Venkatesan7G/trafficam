@@ -92,6 +92,7 @@ func Every(name string, first, interval time.Duration, fn func(ctx context.Conte
 // Stats are cheap counters, safe to read while running.
 type Stats struct {
 	Flows, Dropped, Rows, Alerts, Panics, Restarts, StoreErrors, ScoreErrors atomic.Uint64
+	LastFlow                                                                 atomic.Int64 // unix nanoseconds of the latest flow (0 = none yet)
 }
 
 type Service struct {
@@ -218,6 +219,7 @@ func (s *Service) superviseTask(ctx context.Context, t Task) {
 // flow is dropped and counted.
 func (s *Service) emit(f event.Flow) {
 	s.Stats.Flows.Add(1)
+	s.Stats.LastFlow.Store(time.Now().UnixNano())
 	if s.cfg.OneShot {
 		// Offline replay must not lose flows, and there is no live network to
 		// stall, so here (and only here) we wait for room in the queue.

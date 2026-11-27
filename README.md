@@ -45,7 +45,7 @@ on your machine will be noticed.
 | Optional pretrained prior (head C) | Loader and trainer work; no real weights shipped yet |
 | **Real capture on Linux (eBPF)** | **Not started** |
 | **Real capture on Windows (ETW)** | Works: `trafficam live` and `trafficam service install`; see [docs/WINDOWS.md](docs/WINDOWS.md) |
-| Desktop notifications | Not started (alerts print to the log) |
+| Desktop notifications | Working on Linux (tested); Windows toast built, needs a check on a real desktop. See below |
 | Learning ramp shown to the user | Not started |
 
 Today you can run the whole pipeline on synthetic or recorded traffic and see
@@ -118,6 +118,34 @@ Record and replay:
 ```
 
 Recordings contain program paths and host names. Read one before sharing it.
+
+### Desktop notifications
+
+The watcher runs as root (Linux) or as a Windows service, and a service can't
+show anything on your desktop. So a second, small program runs as you, gets
+the alerts from the watcher and shows them as normal desktop notifications:
+
+```sh
+trafficam agent -test            # check that a notification appears
+trafficam agent -autostart on    # start the agent every time you log in
+trafficam agent                  # or run it now
+trafficam status                 # how the watcher is doing (stage, flows, unread alerts)
+```
+
+The two talk over a **local socket** (Linux, `/run/trafficam/api.sock`) or a
+**named pipe** (Windows, `\\.\pipe\trafficam`). It isn't a network port, so
+no other computer can reach it. The operating system checks who is
+connecting before anything is read:
+
+- **Linux:** root, or members of the `trafficam` group. Add yourself once:
+  `sudo groupadd -f trafficam && sudo usermod -aG trafficam $USER`, then log
+  out and back in.
+- **Windows:** SYSTEM, Administrators and the signed-in user.
+
+The agent never floods you. It shows at most 3 notifications a minute and
+sums up the rest ("5 new alerts"). Alerts raised while you were logged out
+are shown once when you log in. Host names come from the network, so the
+text is cleaned before it is shown and is never run or opened.
 
 ### Your watch and ignore lists
 
@@ -219,7 +247,7 @@ Roughly in order:
 2. **Windows capture** with ETW (needs administrator; no driver).
 3. **Real-traffic measurement**: volunteer recordings, planted attacks in a
    test VM, and an ablation of rules versus rules plus model.
-4. **Desktop notifications** on both systems.
+4. ~~Desktop notifications~~ (done: `trafficam agent`).
 5. **A learning ramp** you can see: Listening, Settling in, Watching, Guarding.
 6. **Stronger key sealing**: Windows DPAPI and Linux TPM2.
 7. **Tamper response**: loud alert if the database or key is tampered with.

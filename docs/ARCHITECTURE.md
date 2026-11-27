@@ -19,6 +19,10 @@
 | `internal/keyseal` | `Provider` interface for the DB key, sealed to the machine. Portable baseline included. |
 | `internal/enrich` | Offline CIDR -> ASN/country table; fills `Minute.ASN`/`Country`. |
 | `internal/blocklist` | Plain-text domain/IP/CIDR lists (known-bad snapshot, watch list, ignore list). `Reloading` re-reads a list when its file changes. |
+| `internal/alerts` | Stores every alert (DB table `alerts`) and wakes anyone waiting for new ones. It is the service's `score.Notifier`. |
+| `internal/localapi` | Local API for the desktop agent: HTTP over a Unix socket (SO_PEERCRED check) or a named pipe (ACL). No TCP port. |
+| `internal/agent`, `internal/notify` | `trafficam agent`: runs as the user, long-polls the API, shows desktop notifications (D-Bus on Linux, toast on Windows), rate-limited. |
+| `internal/ramp` | The learning ramp (Listening, Settling in, Watching, Guarding) as days since install. |
 | `internal/userlists` | Safe add/remove/show for the user's watch and ignore lists (keeps comments, validates, writes atomically). Used by `trafficam lists`. |
 | `internal/baseline` | Per (program, destination) counters: first seen, days seen, auto-absorb after 3 days. |
 | `internal/rules` | Always-alert rules, merged with the model by one `score.Scorer`. |
