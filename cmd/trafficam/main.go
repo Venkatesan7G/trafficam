@@ -34,9 +34,10 @@ import (
 	"github.com/Venkatesan7G/trafficam/internal/enrich"
 	"github.com/Venkatesan7G/trafficam/internal/event"
 	"github.com/Venkatesan7G/trafficam/internal/keyseal"
+	"github.com/Venkatesan7G/trafficam/internal/model"
+	"github.com/Venkatesan7G/trafficam/internal/modelscore"
 	"github.com/Venkatesan7G/trafficam/internal/replay"
 	"github.com/Venkatesan7G/trafficam/internal/rules"
-	"github.com/Venkatesan7G/trafficam/internal/score"
 	"github.com/Venkatesan7G/trafficam/internal/service"
 	"github.com/Venkatesan7G/trafficam/internal/store"
 )
@@ -56,6 +57,7 @@ func main() {
 	fs.StringVar(&lf.watch, "watch", "", "your alert-anyway list")
 	fs.StringVar(&lf.ignore, "ignore", "", "your ignore list")
 	fs.StringVar(&lf.asn, "asn", "", "offline ASN/country table (CSV)")
+	fs.StringVar(&lf.prior, "prior", "", "head C prior-risk weights (TCW1 file); empty = head C off")
 	fs.Parse(args)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -114,7 +116,7 @@ func openStore(dir string) (*store.Store, error) {
 }
 
 // listFiles are the optional offline files named on the command line.
-type listFiles struct{ blocklist, watch, ignore, asn string }
+type listFiles struct{ blocklist, watch, ignore, asn, prior string }
 
 func loadList(path string) (*blocklist.List, error) {
 	if path == "" {
@@ -146,20 +148,37 @@ func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, l
 		enricher = t
 	}
 
-	// The model plugs in here. Until the model PR is merged this is score.Nop,
-	// and only the rules produce alerts. Once it is merged:
-	//
-	//	m, _ := modelscore.New(modelscore.Config{History: st, ...})
-	//	model = m
-	//	tasks = append(tasks, service.Task{Name: "nightly-training",
-	//	        Run: func(ctx context.Context) error { m.Loop(ctx); return nil }})
-	var model score.Scorer = score.Nop{}
+	// The learning model: scores every row, trains itself nightly on the
+	// stored history, and keeps its state in <data>/model.tcw. Head C is a user
+	// switch (--prior); without it the model runs on its own.
+	var prior *model.HeadC
+	if lf.prior != "" {
+		raw, err := os.ReadFile(lf.prior)
+		if err != nil {
+			return err
+		}
+		w, err := model.DecodeWeights(raw)
+		if err != nil {
+			return err
+		}
+		if prior, err = model.LoadHeadC(w); err != nil {
+			return err
+		}
+	}
+	learner, err := modelscore.New(modelscore.Config{
+		ModelPath: filepath.Join(dir, "model.tcw"), History: st, Prior: prior, Log: log,
+	})
+	if err != nil {
+		return err
+	}
 	var tasks []service.Task
+	tasks = append(tasks, service.Task{Name: "nightly-training",
+		Run: func(ctx context.Context) error { learner.Loop(ctx); return nil }})
 
 	scorer, err := rules.NewScorer(rules.Config{
 		Baseline:  &baseline.Tracker{B: st},
 		Blocklist: lists[0], AlertAnyway: lists[1], Ignore: lists[2],
-	}, model)
+	}, learner)
 	if err != nil {
 		return err
 	}

@@ -18,8 +18,8 @@ import (
 // so training and live scoring derive features identically.
 type Tracker struct {
 	// UseProgramMeta feeds Program.Parent and Program.Signer to the model.
-	// Off by default because the store does not persist them yet, so history
-	// replayed for training would lack them while live rows have them.
+	// On by default: the store persists both (schema v2), so history replayed
+	// for training carries them just like live rows.
 	UseProgramMeta bool
 
 	first    map[string]time.Time // prog|dest -> first seen
@@ -37,7 +37,7 @@ type failRec struct {
 
 // NewTracker returns an empty tracker.
 func NewTracker() *Tracker {
-	return &Tracker{first: map[string]time.Time{}, last: map[string]time.Time{}, users: map[string]map[string]struct{}{},
+	return &Tracker{UseProgramMeta: true, first: map[string]time.Time{}, last: map[string]time.Time{}, users: map[string]map[string]struct{}{},
 		contacts: map[string][]time.Time{}, fails: map[string][]failRec{}}
 }
 
@@ -98,16 +98,17 @@ func (t *Tracker) Observe(rows []event.Minute) []model.Flow {
 
 		isIP := isIPHost(m.Host)
 		f := model.Flow{
-			Time:    m.Start.Local(),
-			Program: prog,
-			Dest:    dest,
-			Port:    m.Port,
-			Proto:   model.TCP,
-			Dir:     model.Outbound,
-			// Not in the core's row yet: ASN and country (need the offline
-			// database), connection duration.
+			Time:               m.Start.Local(),
+			Program:            prog,
+			Dest:               dest,
+			ASN:                m.ASN,
+			Country:            m.Country,
+			Port:               m.Port,
+			Proto:              model.TCP,
+			Dir:                model.Outbound,
 			BytesOut:           float64(m.BytesOut),
 			BytesIn:            float64(m.BytesIn),
+			DurationSec:        float64(m.DurationMs) / 1000,
 			SendEvents:         float64(m.Packets), // GUESS: packets stand in for send events
 			IntervalCV:         intervalCV(c),
 			Contacts1h:         float64(len(c)),

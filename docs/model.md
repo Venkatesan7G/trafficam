@@ -17,7 +17,7 @@ core's `score.Scorer`), `python/` (offline tools). Full design: the design doc.
 | Head C trainer, cross-dataset gate | `python/prior` | done, **synthetic data only** |
 | One weight-file format, Go and Python | `weights.go`, `python/trafficam_model/tcw.py` | done |
 | Adapter to `score.Scorer`, feature tracker, nightly loop | `internal/modelscore` | done |
-| Baseline counters, hard always-alert rules, blocklist | | **not in this PR** |
+| Baseline counters, always-alert rules, blocklist | `internal/rules` (core PR #3) | wraps this scorer |
 
 ## Weight file (TCW1)
 
@@ -52,13 +52,13 @@ training (needs 10,000 rows) the scorer never alerts and reports the
 `Listening` phase. `Scorer.TrainNow` and `Scorer.Loop` run the nightly job;
 wiring them into `cmd/trafficam` is left to the core.
 
-## Things the core's rows do not have yet
+## What the core's rows now provide
 
-The model degrades gracefully, but these would help:
-- Parent program and signer are not stored, so history replays without them.
-  `Tracker.UseProgramMeta` is off until the store keeps them.
-- ASN and country need the offline database (not built); both are empty today.
-- Connection duration; packets stand in for "send events" (guess).
+Schema v2 stores parent, signer, ASN, country and connection duration, and the
+tracker uses all of them. Packets still stand in for "send events" (guess).
+The baseline counters, always-alert rules and blocklist live in
+`internal/rules`, which wraps this scorer. `cmd/trafficam` registers the nightly
+job; `--prior FILE` switches head C on.
 
 ## Guesses (mine, to measure or confirm)
 
