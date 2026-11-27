@@ -33,6 +33,12 @@ type Config struct {
 	AlertAnyway *blocklist.List // user "watch" list
 	Ignore      *blocklist.List // user "ignore" list
 
+	// WatchSource and IgnoreSource, when set, replace AlertAnyway and Ignore
+	// with lists that can change while running (the user edited the file).
+	// They are read once per batch.
+	WatchSource  blocklist.Source
+	IgnoreSource blocklist.Source
+
 	Baseline *baseline.Tracker // required
 
 	InstallGrace       time.Duration // [48h] no novelty alerts while the install is younger
@@ -112,6 +118,13 @@ func (s *Scorer) Score(ctx context.Context, batch []event.Minute) ([]score.Verdi
 
 	// 3. Rules and merge. A novelty fact is reported once per batch, not once
 	// per minute row, so a burst does not become a burst of notifications.
+	watch, ignore := s.cfg.AlertAnyway, s.cfg.Ignore
+	if s.cfg.WatchSource != nil {
+		watch = s.cfg.WatchSource.Current()
+	}
+	if s.cfg.IgnoreSource != nil {
+		ignore = s.cfg.IgnoreSource.Current()
+	}
 	told := map[string]bool{}
 	for i, m := range batch {
 		v := &out[i]
@@ -121,7 +134,7 @@ func (s *Scorer) Score(ctx context.Context, batch []event.Minute) ([]score.Verdi
 			v.Score, v.Alert, forced = 1, true, true
 			v.Reasons = append(v.Reasons, fmt.Sprintf("destination is on the known-bad list (%s)", entry))
 		}
-		if entry, ok := s.cfg.AlertAnyway.Match(m); ok {
+		if entry, ok := watch.Match(m); ok {
 			v.Score, v.Alert, forced = max(v.Score, 1), true, true
 			v.Reasons = append(v.Reasons, fmt.Sprintf("destination is on your watch list (%s)", entry))
 		}
@@ -129,14 +142,14 @@ func (s *Scorer) Score(ctx context.Context, batch []event.Minute) ([]score.Verdi
 			continue
 		}
 
-		if pastGrace && m.Host != "" && !s.cfg.Ignore.IsMatch(m) {
+		if pastGrace && m.Host != "" && !ignore.IsMatch(m) {
 			if r := s.novelty(m, infos[i], told); r != "" {
 				v.Alert = true
 				v.Score = max(v.Score, 0.8)
 				v.Reasons = append(v.Reasons, r)
 			}
 		}
-		if _, ignored := s.cfg.Ignore.Match(m); ignored {
+		if _, ignored := ignore.Match(m); ignored {
 			v.Alert = false // user said this is fine; the score stays for the record
 		}
 	}

@@ -11,7 +11,10 @@
 //	203.0.113.7                 single IP
 //	198.51.100.0/24             network
 //	cdn.example.net firefox     rule that applies only to the program "firefox"
-//	                            (matches program name or full path)
+//	                            (matches program name, full path, or the OS service
+//	                            it runs, e.g. a Windows service or systemd unit)
+//	* backupd                   every destination of one program or service; "*"
+//	                            must name a program (a bare "*" would match everything)
 //
 // Matching is case-insensitive for names.
 package blocklist
@@ -36,6 +39,7 @@ type rule struct {
 type List struct {
 	domains map[string][]rule // lower-case domain -> rules
 	nets    []rule
+	anyDest []rule // "* program": every destination of that program
 	size    int
 }
 
@@ -84,6 +88,14 @@ func (l *List) Add(line string) error {
 	if len(fields) == 2 {
 		r.prog = strings.ToLower(fields[1])
 	}
+	if fields[0] == "*" {
+		if r.prog == "" {
+			return fmt.Errorf("\"*\" must name a program, e.g. \"* backupd\" (a bare \"*\" would match everything)")
+		}
+		l.anyDest = append(l.anyDest, r)
+		l.size++
+		return nil
+	}
 	if p, err := netip.ParsePrefix(fields[0]); err == nil {
 		r.prefix = p.Masked()
 		l.nets = append(l.nets, r)
@@ -103,6 +115,11 @@ func (l *List) Add(line string) error {
 func (l *List) Match(m event.Minute) (string, bool) {
 	if l == nil || l.size == 0 {
 		return "", false
+	}
+	for _, r := range l.anyDest {
+		if progOK(r, m.Program) {
+			return "* " + r.prog, true
+		}
 	}
 	if m.Host != "" {
 		// Walk "a.b.evil.com" -> "b.evil.com" -> "evil.com" -> "com".
@@ -136,7 +153,16 @@ func (l *List) Match(m event.Minute) (string, bool) {
 }
 
 func progOK(r rule, p event.Program) bool {
-	return r.prog == "" || r.prog == strings.ToLower(p.Name) || r.prog == strings.ToLower(p.Path)
+	if r.prog == "" || r.prog == strings.ToLower(p.Name) || r.prog == strings.ToLower(p.Path) {
+		return true
+	}
+	// A process can host several services ("BITS,wuauserv"); any one matches.
+	for _, s := range strings.Split(p.Service, ",") {
+		if s = strings.TrimSpace(s); s != "" && r.prog == strings.ToLower(s) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsMatch is Match without the rule text (nil-safe).

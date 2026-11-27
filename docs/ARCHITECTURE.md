@@ -18,7 +18,8 @@
 | `internal/store` | Encrypted SQLite (SQLCipher), WAL, 32-byte raw key. |
 | `internal/keyseal` | `Provider` interface for the DB key, sealed to the machine. Portable baseline included. |
 | `internal/enrich` | Offline CIDR -> ASN/country table; fills `Minute.ASN`/`Country`. |
-| `internal/blocklist` | Plain-text domain/IP/CIDR lists (known-bad snapshot, watch list, ignore list). |
+| `internal/blocklist` | Plain-text domain/IP/CIDR lists (known-bad snapshot, watch list, ignore list). `Reloading` re-reads a list when its file changes. |
+| `internal/userlists` | Safe add/remove/show for the user's watch and ignore lists (keeps comments, validates, writes atomically). Used by `trafficam lists`. |
 | `internal/baseline` | Per (program, destination) counters: first seen, days seen, auto-absorb after 3 days. |
 | `internal/rules` | Always-alert rules, merged with the model by one `score.Scorer`. |
 | `internal/service` | Supervisor: panic recovery, collector restart with backoff, bounded queue. |
