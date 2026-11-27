@@ -260,10 +260,21 @@ func TestLiveUDPAndDNS(t *testing.T) {
 		return isMe(f) && f.Proto == event.DNS && f.DNSName == "trafficam-test.example"
 	})
 
+	// 192.0.2.0/24 is unroutable, so this connect fails; we only need the
+	// attempt, labelled with the name.
+	d := net.Dialer{Timeout: time.Second}
+	if c, err := d.Dial("tcp4", "192.0.2.77:80"); err == nil {
+		c.Close()
+	}
+	waitFor("TCP labelled with DNS name", func(f event.Flow) bool {
+		return isMe(f) && f.Proto == event.TCP && f.Remote.Addr() == answer && f.DNSName == "trafficam-test.example"
+	})
+
 	// Many lookups in a row, each from a brand-new socket to the same
 	// server. The kernel reuses a closed socket's memory for the next one,
 	// which once made about 1 in 15 lookups show up as program "unknown".
-	// Every one of them must be ours.
+	// Every one of them must be ours. (Run last: every answer is the same
+	// address, so these names replace the one checked above.)
 	const many = 40
 	for i := 0; i < many; i++ {
 		name := fmt.Sprintf("n%d.trafficam-test.example", i)
@@ -280,14 +291,4 @@ func TestLiveUDPAndDNS(t *testing.T) {
 			t.Errorf("lookup %s credited to %+v, want this test (pid %d)", name, f.Program, os.Getpid())
 		}
 	}
-
-	// 192.0.2.0/24 is unroutable, so this connect fails; we only need the
-	// attempt, labelled with the name.
-	d := net.Dialer{Timeout: time.Second}
-	if c, err := d.Dial("tcp4", "192.0.2.77:80"); err == nil {
-		c.Close()
-	}
-	waitFor("TCP labelled with DNS name", func(f event.Flow) bool {
-		return isMe(f) && f.Proto == event.TCP && f.Remote.Addr() == answer && f.DNSName == "trafficam-test.example"
-	})
 }
