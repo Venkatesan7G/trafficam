@@ -158,6 +158,8 @@ trafficam lists                                   # show both lists
 trafficam lists add watch example.org             # always tell me about example.org
 trafficam lists add ignore updates.example.net -note "my backup tool"
 trafficam lists add ignore 198.51.100.0/24 curl   # only for the program curl
+trafficam lists add ignore -program backupd       # every destination of one program or service
+trafficam lists add watch -program powershell.exe # tell me about everything this program connects to
 trafficam lists remove ignore updates.example.net
 trafficam lists edit watch                        # open the file in a text editor
 ```
@@ -177,7 +179,12 @@ evil.example.com            # a domain; also matches sub.evil.example.com
 203.0.113.7                 # one IP address
 198.51.100.0/24             # a network
 cdn.example.net firefox     # applies only to the program "firefox"
+* backupd                   # every destination of the program or service "backupd"
 ```
+
+The program can be its name, its full path, or the service it runs (a Windows
+service such as `wuauserv`, or a systemd unit such as `chronyd.service`).
+Ignoring a whole program never silences the known-bad list or your watch list.
 
 The `-asn` file is CSV, one network per line: `cidr,asn,country`, for example
 `93.184.216.0/24,15133,US`.

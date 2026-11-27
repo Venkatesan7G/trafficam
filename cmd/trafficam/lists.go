@@ -7,13 +7,14 @@ package main
 //	trafficam lists                                   show both lists
 //	trafficam lists show watch|ignore
 //	trafficam lists add watch|ignore PATTERN [PROGRAM] [-note TEXT]
-//	trafficam lists remove watch|ignore PATTERN [PROGRAM]
+//	trafficam lists add watch|ignore -program NAME    every destination of one program or service
+//	trafficam lists remove watch|ignore PATTERN [PROGRAM]   (or -program NAME)
 //	trafficam lists edit watch|ignore                 open the file in a text editor
 //	trafficam lists path watch|ignore                 print where the file is
 //
 // PATTERN is a domain (covers its subdomains), an IP address or a network
-// such as 198.51.100.0/24. PROGRAM limits the rule to one program (its name
-// or full path). Flags: -data DIR (the watcher's data folder), -file FILE (a
+// such as 198.51.100.0/24. PROGRAM limits the rule to one program (its name,
+// full path, or the Windows service / systemd unit it runs). Flags: -data DIR (the watcher's data folder), -file FILE (a
 // list file given to the watcher with -watch/-ignore instead).
 
 import (
@@ -29,12 +30,14 @@ import (
 const listsUsage = `usage:
   trafficam lists [show [watch|ignore]]
   trafficam lists add watch|ignore PATTERN [PROGRAM] [-note TEXT]
+  trafficam lists add watch|ignore -program NAME [-note TEXT]   (every destination of a program or service)
   trafficam lists remove watch|ignore PATTERN [PROGRAM]
+  trafficam lists remove watch|ignore -program NAME
   trafficam lists edit|path watch|ignore
 flags: -data DIR, -file FILE`
 
 func listsCommand(args []string) error {
-	opts := map[string]string{"data": defaultListsDir(), "note": "", "file": ""}
+	opts := map[string]string{"data": defaultListsDir(), "note": "", "file": "", "program": ""}
 	var pos []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -94,6 +97,12 @@ func listsCommand(args []string) error {
 		k, err := kind()
 		if err != nil {
 			return err
+		}
+		if opts["program"] != "" { // -program NAME = every destination of that program
+			if len(pos) != 2 {
+				return fmt.Errorf("use either PATTERN [PROGRAM] or -program NAME, not both\n%s", listsUsage)
+			}
+			pos = append(pos, userlists.AnyDestination, opts["program"])
 		}
 		if len(pos) < 3 || len(pos) > 4 {
 			return fmt.Errorf("%s needs PATTERN [PROGRAM]\n%s", action, listsUsage)
@@ -175,7 +184,9 @@ func showList(f userlists.File) error {
 	}
 	for _, e := range es {
 		line := "  " + e.Pattern
-		if e.Program != "" {
+		if e.Pattern == userlists.AnyDestination {
+			line = "  every destination of " + e.Program
+		} else if e.Program != "" {
 			line += "   only for " + e.Program
 		}
 		if e.Note != "" {

@@ -39,3 +39,30 @@ func TestMatching(t *testing.T) {
 		t.Fatal("bad line accepted")
 	}
 }
+
+func TestWholeProgramAndService(t *testing.T) {
+	l := New()
+	for _, s := range []string{"* backupd", "* wuauserv", "pool.ntp.org chronyd.service"} {
+		if err := l.Add(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := New().Add("*"); err == nil {
+		t.Fatal("bare * accepted")
+	}
+	cases := []struct {
+		m    event.Minute
+		want bool
+	}{
+		{event.Minute{Host: "anything.example", Program: event.Program{Name: "backupd"}}, true},
+		{event.Minute{Host: "anything.example", Program: event.Program{Name: "firefox"}}, false},
+		{event.Minute{Host: "x.example", Program: event.Program{Name: "svchost.exe", Service: "BITS,wuauserv"}}, true},
+		{event.Minute{Host: "x.example", Program: event.Program{Name: "svchost.exe", Service: "Dnscache"}}, false},
+		{event.Minute{Host: "pool.ntp.org", Program: event.Program{Name: "chronyd", Service: "chronyd.service"}}, true},
+	}
+	for i, c := range cases {
+		if _, got := l.Match(c.m); got != c.want {
+			t.Errorf("case %d: got %v", i, got)
+		}
+	}
+}

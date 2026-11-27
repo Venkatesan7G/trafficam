@@ -86,3 +86,20 @@ func TestEnsureWritesHeaderOnce(t *testing.T) {
 		t.Fatal("Ensure overwrote the file")
 	}
 }
+
+func TestWholeProgram(t *testing.T) {
+	f := File{Path: filepath.Join(t.TempDir(), "ignore.txt"), Kind: Ignore}
+	if _, err := f.Add("*", "", ""); err == nil {
+		t.Fatal("* without a program accepted")
+	}
+	if changed, err := f.Add("*", "backupd", "my backup tool"); err != nil || !changed {
+		t.Fatal(changed, err)
+	}
+	l, err := blocklist.Load(f.Path)
+	if err != nil || !l.IsMatch(event.Minute{Host: "z.example", Program: event.Program{Name: "backupd"}}) {
+		t.Fatal("whole-program rule does not match", err)
+	}
+	if n, _ := f.Remove("*", "backupd"); n != 1 {
+		t.Fatal("not removed")
+	}
+}
