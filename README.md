@@ -9,8 +9,9 @@ watches and notifies, so you get peace of mind that a bad call from a program
 on your machine will be noticed.
 
 > **Status: early development.** The shared core works end to end on synthetic
-> and recorded traffic, including the learning model. Real capture on Linux
-> and Windows and desktop notifications are not on `main` yet. See
+> and recorded traffic, including the learning model. Real capture works on
+> Windows (`trafficam live`, or as a service); Linux capture and desktop
+> notifications are not on `main` yet. See
 > [What works today](#what-works-today) before you try it.
 
 ## Principles
@@ -43,7 +44,7 @@ on your machine will be noticed.
 | Anomaly model (learns each program's habits), nightly self-training, wired into the service | Working, tested on synthetic data only |
 | Optional pretrained prior (head C) | Loader and trainer work; no real weights shipped yet |
 | **Real capture on Linux (eBPF)** | **Not started** |
-| **Real capture on Windows (ETW)** | **Not started** |
+| **Real capture on Windows (ETW)** | Works: `trafficam live` and `trafficam service install`; see [docs/WINDOWS.md](docs/WINDOWS.md) |
 | Desktop notifications | Not started (alerts print to the log) |
 | Learning ramp shown to the user | Not started |
 
@@ -69,8 +70,8 @@ go build -o trafficam ./cmd/trafficam
 go test ./...
 ```
 
-On Windows the binary is `trafficam.exe`. The Windows build is not yet tested
-in CI, so expect rough edges.
+On Windows the binary is `trafficam.exe`. CI builds and tests it on Windows,
+including a real ETW capture check; [docs/WINDOWS.md](docs/WINDOWS.md) has the steps to try it on your PC.
 
 ## Usage
 
@@ -217,7 +218,6 @@ Supported platforms are planned as Windows 10/11 and the latest Linux kernel.
   already running as you.
 - Detection quality is unmeasured on real networks, and no real prior weights ship yet.
 - It cannot see inside encrypted traffic, only who talked to whom.
-- Windows builds are untested in CI.
 
 ## Contributing
 
