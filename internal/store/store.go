@@ -103,9 +103,12 @@ INSERT OR IGNORE INTO meta(k,v) VALUES('installed_at', CAST(strftime('%s','now')
   reasons   TEXT    NOT NULL,   -- JSON array of strings
   phase     TEXT    NOT NULL,
   state     TEXT    NOT NULL DEFAULT 'new',
-  state_at  INTEGER NOT NULL DEFAULT 0
+  state_at  INTEGER NOT NULL DEFAULT 0,
+  count     INTEGER NOT NULL DEFAULT 1, -- times this same alert was raised while still unread
+  last_at   INTEGER NOT NULL DEFAULT 0  -- unix seconds of the latest repeat
 );
-CREATE INDEX alerts_at ON alerts(at);`,
+CREATE INDEX alerts_at ON alerts(at);
+CREATE INDEX alerts_open ON alerts(prog_key, host, port, dir, state);`,
 }
 
 func (s *Store) migrate() error {

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,8 +16,8 @@ func TestAlerts(t *testing.T) {
 	t0 := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 	var ids []int64
 	for i := 0; i < 3; i++ {
-		a, err := s.AlertAdd(Alert{At: t0.Add(time.Duration(i) * time.Hour), Start: t0, Program: "curl", ProgKey: "/usr/bin/curl",
-			Host: "x.example", Port: 443, Proto: "tcp", Dir: "out", Score: 0.9, Reasons: []string{"new host", "on watch list"}})
+		a, _, err := s.AlertAdd(Alert{At: t0.Add(time.Duration(i) * time.Hour), Start: t0, Program: "curl", ProgKey: "/usr/bin/curl",
+			Host: fmt.Sprintf("x%d.example", i), Port: 443, Proto: "tcp", Dir: "out", Score: 0.9, Reasons: []string{"new host", "on watch list"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -48,5 +49,46 @@ func TestAlerts(t *testing.T) {
 	}
 	if n, _ := s.AlertsPruneBefore(t0.Add(90 * time.Minute)); n != 2 {
 		t.Fatalf("pruned %d", n)
+	}
+}
+
+func TestRepeatsAreOneAlert(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "r.db"), key(3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	t0 := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	mk := func(at time.Time, port uint16) Alert {
+		return Alert{At: at, Start: at, ProgKey: "/usr/sbin/chronyd", Program: "chronyd", Host: "pool.ntp.org", Port: port, Dir: "out", Score: 1}
+	}
+	a, isNew, _ := s.AlertAdd(mk(t0, 123))
+	if !isNew || a.Count != 1 {
+		t.Fatalf("%+v %v", a, isNew)
+	}
+	for i := 1; i <= 5; i++ {
+		b, isNew, err := s.AlertAdd(mk(t0.Add(time.Duration(i)*time.Minute), 123))
+		if err != nil || isNew || b.ID != a.ID {
+			t.Fatalf("repeat %d: %+v %v %v", i, b, isNew, err)
+		}
+	}
+	got, _ := s.AlertGet(a.ID)
+	if got.Count != 6 || !got.LastAt.Equal(t0.Add(5*time.Minute)) {
+		t.Fatalf("%+v", got)
+	}
+	// Another port is a different alert; after OK, a repeat is new again.
+	if _, isNew, _ := s.AlertAdd(mk(t0, 124)); !isNew {
+		t.Fatal("different port merged")
+	}
+	s.AlertSetState(a.ID, AlertOK, t0)
+	if _, isNew, _ := s.AlertAdd(mk(t0.Add(time.Hour), 123)); !isNew {
+		t.Fatal("repeat after OK was swallowed")
+	}
+	// After the repeat window an unread alert no longer absorbs repeats.
+	if _, isNew, _ := s.AlertAdd(mk(t0.Add(26*time.Hour), 124)); !isNew {
+		t.Fatal("old alert absorbed a new one")
+	}
+	if n, _ := s.AlertCountSince(t0); n != 4 {
+		t.Fatalf("count %d", n)
 	}
 }

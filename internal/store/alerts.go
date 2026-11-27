@@ -37,12 +37,43 @@ type Alert struct {
 	Phase    string     `json:"phase,omitempty"`
 	State    AlertState `json:"state"`
 	StateAt  time.Time  `json:"state_at,omitempty"`
+	// Count is how many times this alert was raised while it was still
+	// unread; LastAt is the latest of those. Repeats do not create new
+	// alerts, so a watched destination contacted every minute is one alert.
+	Count  int       `json:"count"`
+	LastAt time.Time `json:"last_at"`
 }
 
-const alertCols = `id,at,start,prog_key,prog_name,prog_path,prog_svc,proto,dir,host,remote_ip,port,asn,country,score,reasons,phase,state,state_at`
+const alertCols = `id,at,start,prog_key,prog_name,prog_path,prog_svc,proto,dir,host,remote_ip,port,asn,country,score,reasons,phase,state,state_at,count,last_at`
 
-// AlertAdd stores a new alert and returns it with its ID filled in.
-func (s *Store) AlertAdd(a Alert) (Alert, error) {
+// RepeatWindow: an unread alert for the same program, destination, port and
+// direction raised within this long absorbs a new one instead of adding a row.
+const RepeatWindow = 24 * time.Hour
+
+// AlertAdd stores an alert and returns it with its ID filled in. If the same
+// alert (program, destination, port, direction) is still unread and was
+// raised in the last RepeatWindow, that alert's count goes up instead and
+// isNew is false.
+func (s *Store) AlertAdd(a Alert) (stored Alert, isNew bool, err error) {
+	var id int64
+	err = s.db.QueryRow(`SELECT id FROM alerts WHERE prog_key=? AND host=? AND port=? AND dir=? AND state='new' AND at >= ?
+ORDER BY id DESC LIMIT 1`, a.ProgKey, a.Host, int(a.Port), a.Dir, a.At.Add(-RepeatWindow).Unix()).Scan(&id)
+	switch {
+	case err == nil:
+		if _, err = s.db.Exec(`UPDATE alerts SET count=count+1, last_at=MAX(last_at, ?), score=MAX(score, ?) WHERE id=?`,
+			a.At.Unix(), a.Score, id); err != nil {
+			return a, false, err
+		}
+		stored, err = s.AlertGet(id)
+		return stored, false, err
+	case !isNoRows(err):
+		return a, false, err
+	}
+	stored, err = s.alertInsert(a)
+	return stored, err == nil, err
+}
+
+func (s *Store) alertInsert(a Alert) (Alert, error) {
 	if a.State == "" {
 		a.State = AlertNew
 	}
@@ -61,7 +92,17 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`,
 		return a, err
 	}
 	a.ID, err = r.LastInsertId()
+	a.Count, a.LastAt = 1, a.At
+	if err == nil {
+		_, err = s.db.Exec(`UPDATE alerts SET last_at=at WHERE id=?`, a.ID)
+	}
 	return a, err
+}
+
+// AlertCountSince counts alerts raised at or after t.
+func (s *Store) AlertCountSince(t time.Time) (n int, err error) {
+	err = s.db.QueryRow(`SELECT COUNT(*) FROM alerts WHERE at >= ?`, t.Unix()).Scan(&n)
+	return
 }
 
 // AlertQuery selects alerts. Zero values mean "no filter".
@@ -163,13 +204,13 @@ func (s *Store) AlertsPruneBefore(t time.Time) (int64, error) {
 
 func scanAlert(r interface{ Scan(...any) error }) (Alert, error) {
 	var (
-		a                  Alert
-		at, start, stateAt int64
-		port               int
-		reasons, state     string
+		a                          Alert
+		at, start, stateAt, lastAt int64
+		port                       int
+		reasons, state             string
 	)
 	err := r.Scan(&a.ID, &at, &start, &a.ProgKey, &a.Program, &a.Path, &a.Service, &a.Proto, &a.Dir, &a.Host,
-		&a.RemoteIP, &port, &a.ASN, &a.Country, &a.Score, &reasons, &a.Phase, &state, &stateAt)
+		&a.RemoteIP, &port, &a.ASN, &a.Country, &a.Score, &reasons, &a.Phase, &state, &stateAt, &a.Count, &lastAt)
 	if err != nil {
 		return a, err
 	}
@@ -177,7 +218,7 @@ func scanAlert(r interface{ Scan(...any) error }) (Alert, error) {
 	if stateAt != 0 {
 		a.StateAt = time.Unix(stateAt, 0).UTC()
 	}
-	a.Port, a.State = uint16(port), AlertState(state)
+	a.Port, a.State, a.LastAt = uint16(port), AlertState(state), time.Unix(lastAt, 0).UTC()
 	if err := json.Unmarshal([]byte(reasons), &a.Reasons); err != nil {
 		a.Reasons = []string{reasons}
 	}

@@ -20,7 +20,7 @@ import (
 
 // Store is the part of store.Store the hub needs.
 type Store interface {
-	AlertAdd(store.Alert) (store.Alert, error)
+	AlertAdd(store.Alert) (stored store.Alert, isNew bool, err error)
 	Alerts(store.AlertQuery) ([]store.Alert, error)
 }
 
@@ -69,7 +69,7 @@ func (h *Hub) Notify(a score.Alert) {
 	if h.Log != nil {
 		h.Log.Warn("ALERT", "program", m.Program.Name, "host", m.Host, "port", m.Port, "score", v.Score, "reasons", v.Reasons)
 	}
-	stored, err := h.St.AlertAdd(store.Alert{
+	stored, isNew, err := h.St.AlertAdd(store.Alert{
 		At: h.now().UTC(), Start: m.Start, ProgKey: m.Program.Key(), Program: m.Program.Name, Path: m.Program.Path,
 		Service: m.Program.Service, Proto: string(m.Proto), Dir: string(m.Dir), Host: m.Host, RemoteIP: m.RemoteIP,
 		Port: m.Port, ASN: m.ASN, Country: m.Country, Score: v.Score, Reasons: v.Reasons, Phase: v.Phase,
@@ -80,7 +80,9 @@ func (h *Hub) Notify(a score.Alert) {
 		}
 		return
 	}
-	h.signal(stored.ID)
+	if isNew { // a repeat of an unread alert only raises its count
+		h.signal(stored.ID)
+	}
 }
 
 // Wait returns alerts with ID > after. If there are none yet it waits until
