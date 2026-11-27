@@ -1,8 +1,10 @@
 package localapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -93,4 +95,72 @@ func (c *Client) Alerts(ctx context.Context, q store.AlertQuery) ([]store.Alert,
 func (c *Client) Wait(ctx context.Context, after int64) ([]store.Alert, error) {
 	var l AlertList
 	return l.Alerts, c.get(ctx, "/v1/alerts/wait", url.Values{"after": {strconv.FormatInt(after, 10)}}, &l)
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, base+path, rd)
+	if err != nil {
+		return err
+	}
+	return c.post(req, out)
+}
+
+// AlertOK marks an alert as seen ("OK").
+func (c *Client) AlertOK(ctx context.Context, id int64) (store.Alert, error) {
+	var a store.Alert
+	return a, c.do(ctx, http.MethodPost, fmt.Sprintf("/v1/alerts/%d/ok", id), nil, &a)
+}
+
+// AlertMute is "don't show again" for this alert's program and destination.
+func (c *Client) AlertMute(ctx context.Context, id int64) (store.Alert, error) {
+	var a store.Alert
+	return a, c.do(ctx, http.MethodPost, fmt.Sprintf("/v1/alerts/%d/mute", id), nil, &a)
+}
+
+// Lists returns the watch and ignore lists.
+func (c *Client) Lists(ctx context.Context) (ListsReply, error) {
+	var l ListsReply
+	return l, c.do(ctx, http.MethodGet, "/v1/lists", nil, &l)
+}
+
+// WatchAdd adds a rule to the watch list.
+func (c *Client) WatchAdd(ctx context.Context, r RuleRequest) (ListsReply, error) {
+	var l ListsReply
+	return l, c.do(ctx, http.MethodPost, "/v1/lists/watch/add", r, &l)
+}
+
+// IgnoreRemove takes a rule off the ignore list.
+func (c *Client) IgnoreRemove(ctx context.Context, r RuleRequest) (ListsReply, error) {
+	var l ListsReply
+	return l, c.do(ctx, http.MethodPost, "/v1/lists/ignore/remove", r, &l)
+}
+
+// Learning returns how much has been learned.
+func (c *Client) Learning(ctx context.Context) (Learning, error) {
+	var l Learning
+	return l, c.do(ctx, http.MethodGet, "/v1/learning", nil, &l)
+}
+
+// Find returns a client for the first address where the service answers.
+func Find(ctx context.Context, addrs []string) (*Client, error) {
+	var errs []error
+	for _, ad := range addrs {
+		c := NewClient(ad)
+		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		_, err := c.Status(cctx)
+		cancel()
+		if err == nil {
+			return c, nil
+		}
+		errs = append(errs, fmt.Errorf("%s: %w", ad, err))
+	}
+	return nil, errors.Join(errs...)
 }

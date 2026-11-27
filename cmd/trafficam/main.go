@@ -13,6 +13,8 @@
 //	trafficam lists [show|add|remove|edit|path] ...  view and change your watch and ignore lists
 //	trafficam agent [-test] [-autostart on|off]       show alerts as desktop notifications (run as yourself)
 //	trafficam status                                 ask the running watcher how it is doing
+//	trafficam ui                                     open the trafficam window in your browser
+//	trafficam check [-json]                          install-time self-check (exit code 1 on a problem)
 //
 // Optional offline lists, all off unless a file is given (see docs/ARCHITECTURE.md):
 //
@@ -57,7 +59,7 @@ func main() {
 		if runningAsService() { // started by the Windows Service Control Manager
 			os.Args = append(os.Args, "service", "run")
 		} else {
-			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service|lists|agent|status [flags]")
+			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service|lists|agent|status|ui|check [flags]")
 			os.Exit(2)
 		}
 	}
@@ -70,7 +72,8 @@ func main() {
 		}
 		return
 	}
-	if sub, ok := map[string]func([]string) error{"lists": listsCommand, "agent": agentCommand, "status": statusCommand}[cmd]; ok {
+	if sub, ok := map[string]func([]string) error{"lists": listsCommand, "agent": agentCommand, "status": statusCommand,
+		"ui": uiCommand, "check": checkCommand}[cmd]; ok {
 		if err := sub(args); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>trafficam</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="dot" id="live-dot" aria-hidden="true"></span>trafficam</div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="progress" aria-selected="true">Progress</button>
+    <button role="tab" data-tab="alerts">Alerts <span class="badge" id="unread" hidden></span></button>
+    <button role="tab" data-tab="lists">Lists</button>
+    <button role="tab" data-tab="check">Self-check</button>
+  </nav>
+</header>
+
+<main>
+  <div class="banner danger" id="tamper" hidden>
+    <strong>Possible tampering.</strong> <span id="tamper-text"></span>
+    Read <code>TAMPER-ALERT.txt</code> in the trafficam data folder.
+  </div>
+  <div class="banner" id="offline" hidden>The trafficam service is not reachable right now. This page will reconnect by itself.</div>
+
+  <section id="tab-progress" class="tab">
+    <div class="card hero">
+      <p class="eyebrow">Learning your network</p>
+      <h1 id="stage">…</h1>
+      <p class="sub" id="stage-meaning"></p>
+      <ol class="ramp" id="ramp"></ol>
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="bar"><span id="bar-fill"></span></div>
+      <p class="muted" id="bar-text"></p>
+    </div>
+    <div class="stats">
+      <div class="card stat"><span class="num" id="s-programs">–</span><span class="lbl">programs learned</span></div>
+      <div class="card stat"><span class="num" id="s-dests">–</span><span class="lbl">known destinations</span></div>
+      <div class="card stat"><span class="num" id="s-flows">–</span><span class="lbl">connections seen since start</span></div>
+      <div class="card stat"><span class="num" id="s-week">–</span><span class="lbl">alerts in the last 7 days</span></div>
+    </div>
+    <p class="muted small">trafficam only watches. It never blocks anything, and nothing leaves this computer.</p>
+  </section>
+
+  <section id="tab-alerts" class="tab" hidden>
+    <div class="row between">
+      <h2>Alerts</h2>
+      <label class="toggle"><input type="checkbox" id="show-all"> Show handled alerts too</label>
+    </div>
+    <p class="muted small"><b>OK</b> means "I know about this". <b>Don't show again</b> adds this program and destination to your ignore list.</p>
+    <div id="alerts"></div>
+    <p class="empty" id="alerts-empty" hidden>Nothing needs your attention.</p>
+  </section>
+
+  <section id="tab-lists" class="tab" hidden>
+    <div class="grid2">
+      <div class="card">
+        <h2>Watch list</h2>
+        <p class="muted small">Always alert for these, even when they look normal. Leave the destination empty and name a program to hear about everything that program connects to.</p>
+        <form id="watch-form" class="addform" autocomplete="off">
+          <input id="w-pattern" placeholder="example.com, 203.0.113.7 or 198.51.100.0/24" maxlength="253" aria-label="Domain, IP or network">
+          <input id="w-program" placeholder="program or service (optional)" maxlength="200" aria-label="Program or service">
+          <button type="submit" class="primary">Add</button>
+        </form>
+        <p class="error" id="watch-error" hidden></p>
+        <ul class="rules" id="watch"></ul>
+      </div>
+      <div class="card">
+        <h2>Ignore list</h2>
+        <p class="muted small">Never raise a "new" or "unusual" alert for these. They never silence the known-bad list or your watch list.</p>
+        <ul class="rules" id="ignore"></ul>
+        <p class="muted small">To add to this list, press <b>Don't show again</b> on an alert. To add other rules, such as ignoring a whole program (<code>trafficam lists add ignore -program NAME</code>), or to take rules off the watch list, use <code>trafficam lists</code> in an administrator terminal. Changes that make trafficam quieter need an administrator, so other programs on this computer can't make them.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-check" class="tab" hidden>
+    <div class="row between"><h2>Self-check</h2><button id="recheck">Check again</button></div>
+    <ul class="checks" id="checks"></ul>
+  </section>
+</main>
+</body>
+</html>

@@ -46,7 +46,7 @@ on your machine will be noticed.
 | **Real capture on Linux (eBPF)** | **Not started** |
 | **Real capture on Windows (ETW)** | Works: `trafficam live` and `trafficam service install`; see [docs/WINDOWS.md](docs/WINDOWS.md) |
 | Desktop notifications | Working on Linux (tested); Windows toast built, needs a check on a real desktop. See below |
-| Learning ramp shown to the user | Not started |
+| Learning ramp shown to the user, alert view, self-check | Working: `trafficam ui` and `trafficam check` |
 
 Today you can run the whole pipeline on synthetic or recorded traffic and see
 the rules and the model raise alerts. It will not yet watch your real network.
@@ -147,6 +147,42 @@ sums up the rest ("5 new alerts"). Alerts raised while you were logged out
 are shown once when you log in. Host names come from the network, so the
 text is cleaned before it is shown and is never run or opened.
 
+### The trafficam window
+
+```sh
+trafficam ui       # open it in your browser (clicking a notification does too)
+trafficam check    # the same self-check, in the terminal; exit code 1 if something is wrong
+```
+
+![Progress screen](docs/images/window-progress.png)
+
+- **Progress:** where trafficam is on its 30-day learning ramp (Listening, then
+  Settling in, Watching and Guarding), how many programs and destinations it
+  has learned, and how many alerts it raised this week.
+- **Alerts:** each alert with its reasons. **OK** means "I know about this".
+  **Don't show again** puts exactly that program and destination on your ignore
+  list. If a program keeps doing the same thing, you get one alert with a
+  count, not one alert a minute.
+- **Lists:** add to your watch list, take rules off your ignore list.
+- **Self-check:** is the service running, is it seeing traffic, do
+  notifications work, does the agent start at login. Installers run
+  `trafficam check` for the same list.
+
+![Alerts](docs/images/window-alerts.png)
+
+The window is served by `trafficam agent` on `127.0.0.1` only, on a random
+port. Getting in needs a one-time link, which is used up on first use, so a
+link left in your browser history doesn't work again and other users on the
+PC can't get in. It loads nothing from the internet.
+
+**What the desktop can change.** The window, and anything else running as
+you, can make trafficam *louder* (add to the watch list, take rules off the
+ignore list, press OK). It can make trafficam *quieter* only for one alert
+you were actually shown ("Don't show again"). Other quieting changes, such as
+new ignore rules or removing watch rules, need an administrator
+(`trafficam lists ...`), so malware running as you can't quietly whitelist
+itself.
+
 ### Your watch and ignore lists
 
 You do not need to edit files by hand. Use `trafficam lists` (with `sudo` on
@@ -206,7 +242,7 @@ The `-asn` file is CSV, one network per line: `cidr,asn,country`, for example
 3. **Scoring** combines the always-alert rules and the model. If the model
    fails, the rules still answer.
 4. Rows and verdicts go into the **encrypted database**.
-5. Alerts go to a **notifier** (currently the log).
+5. Alerts are stored and handed to **trafficam agent**, which shows desktop notifications and serves the trafficam window.
 
 The always-alert rules:
 
@@ -255,7 +291,7 @@ Roughly in order:
 3. **Real-traffic measurement**: volunteer recordings, planted attacks in a
    test VM, and an ablation of rules versus rules plus model.
 4. ~~Desktop notifications~~ (done: `trafficam agent`).
-5. **A learning ramp** you can see: Listening, Settling in, Watching, Guarding.
+5. ~~A learning ramp you can see~~ (done: `trafficam ui`).
 6. **Stronger key sealing**: Windows DPAPI and Linux TPM2.
 7. **Tamper response**: loud alert if the database or key is tampered with.
 8. **Signed offline knowledge packs** for updating the blocklist and model prior

@@ -11,6 +11,7 @@ import (
 	"github.com/Venkatesan7G/trafficam/internal/event"
 	"github.com/Venkatesan7G/trafficam/internal/score"
 	"github.com/Venkatesan7G/trafficam/internal/store"
+	"github.com/Venkatesan7G/trafficam/internal/userlists"
 )
 
 func startServer(t *testing.T) (*Client, *alerts.Hub, string) { return startServerIn(t, t.TempDir()) }
@@ -84,5 +85,70 @@ func TestSecondListenerRefused(t *testing.T) {
 	_, _, addr := startServer(t)
 	if _, err := Listen(addr); err == nil {
 		t.Fatal("a second service took over a live socket")
+	}
+}
+
+func TestAlertButtonsAndLists(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "a.db"), bytes.Repeat([]byte{4}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	hub := &alerts.Hub{St: st}
+	lists := &Lists{Watch: userlists.File{Path: filepath.Join(dir, "watch.txt"), Kind: userlists.Watch},
+		Ignore: userlists.File{Path: filepath.Join(dir, "ignore.txt"), Kind: userlists.Ignore}}
+	srv := &Server{Hub: hub, Store: st, Actions: st, Lists: lists}
+	addr := testAddr(dir)
+	l, err := Listen(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go srv.Serve(ctx, l)
+	c := NewClient(addr)
+
+	hub.Notify(score.Alert{Minute: event.Minute{Program: event.Program{Name: "updater", Path: "/opt/up/updater"}, Host: "cdn.example", Port: 443},
+		Verdict: score.Verdict{Alert: true, Reasons: []string{"updater has never contacted cdn.example before"}}})
+	hub.Notify(score.Alert{Minute: event.Minute{Program: event.Program{Name: "nc"}, Host: "evil.example", Port: 4444},
+		Verdict: score.Verdict{Alert: true, Reasons: []string{"destination is on the known-bad list (evil.example)"}}})
+
+	a, err := c.AlertOK(ctx, 1)
+	if err != nil || a.State != store.AlertOK {
+		t.Fatalf("ok: %+v %v", a, err)
+	}
+	if a, err = c.AlertMute(ctx, 1); err != nil || a.State != store.AlertMuted {
+		t.Fatalf("mute: %+v %v", a, err)
+	}
+	ls, _ := c.Lists(ctx)
+	if len(ls.Ignore) != 1 || ls.Ignore[0].Pattern != "cdn.example" || ls.Ignore[0].Program != "/opt/up/updater" {
+		t.Fatalf("ignore list after mute: %+v", ls.Ignore)
+	}
+	// Known-bad alerts can't be muted through the ignore list.
+	if _, err := c.AlertMute(ctx, 2); err == nil {
+		t.Fatal("muted a known-bad alert")
+	}
+	if _, err := c.AlertOK(ctx, 99); err == nil {
+		t.Fatal("OK on a missing alert")
+	}
+	// Watch add works; bad patterns are refused; ignore remove works.
+	if ls, err = c.WatchAdd(ctx, RuleRequest{Pattern: "203.0.113.0/24"}); err != nil || len(ls.Watch) != 1 {
+		t.Fatalf("watch add %+v %v", ls, err)
+	}
+	if _, err := c.WatchAdd(ctx, RuleRequest{Pattern: "bad pattern"}); err == nil {
+		t.Fatal("bad pattern accepted")
+	}
+	if ls, err = c.IgnoreRemove(ctx, RuleRequest{Pattern: "cdn.example", Program: "/opt/up/updater"}); err != nil || len(ls.Ignore) != 0 {
+		t.Fatalf("ignore remove %+v %v", ls, err)
+	}
+	// There is deliberately no way to add arbitrary ignore rules or remove watch rules.
+	for _, p := range []string{"/v1/lists/ignore/add", "/v1/lists/watch/remove"} {
+		if err := c.do(ctx, "POST", p, RuleRequest{Pattern: "x.example"}, nil); err == nil {
+			t.Fatalf("%s should not exist", p)
+		}
+	}
+	if lr, err := c.Learning(ctx); err != nil || lr.AlertsWeek != 2 {
+		t.Fatalf("learning %+v %v", lr, err)
 	}
 }
