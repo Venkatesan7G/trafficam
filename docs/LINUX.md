@@ -7,7 +7,7 @@ rest of trafficam doesn't know or care that it runs on Linux.
 
 - **Linux 6.1 or newer.** 6.1 is the first long-term-support kernel with
   everything used here: BPF ring buffer (5.8), fentry/fexit hooks on arm64 (6.0),
-  and the current `udp_recvmsg` arguments (5.19). Older kernels get a clear error.
+  and `bpf_get_func_ret` (5.17). Tested on 6.18 and 7.0. Older kernels get a clear error.
 - **BTF type info** at `/sys/kernel/btf/vmlinux`. Ubuntu, Debian, Fedora, Arch,
   openSUSE and RHEL 9 all ship it.
 - **root**, or the capabilities `CAP_BPF`, `CAP_PERFMON` and `CAP_NET_RAW`.

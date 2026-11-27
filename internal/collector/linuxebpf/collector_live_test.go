@@ -43,24 +43,33 @@ func liveRun(t *testing.T) (waitFor func(desc string, want func(event.Flow) bool
 		UDPIdle:         time.Second,
 		TCPReportAfter:  time.Second,
 	})
-	done := make(chan error, 1)
+	// done is closed when Run returns; runErr is only read after that.
+	// (Closing instead of sending means both the start-up check and the
+	// cleanup can wait on it; a send could only be received once, which
+	// once made a failed start hang the test.)
+	done := make(chan struct{})
+	var runErr error
 	go func() {
-		done <- c.Run(ctx, func(f event.Flow) {
+		defer close(done)
+		runErr = c.Run(ctx, func(f event.Flow) {
 			mu.Lock()
 			flows = append(flows, f)
 			mu.Unlock()
 		})
 	}()
+	stopped := false
 	t.Cleanup(func() {
 		cancel()
-		if err := <-done; err != nil {
-			t.Errorf("Run returned error: %v", err)
+		<-done
+		if runErr != nil && !stopped {
+			t.Errorf("Run returned error: %v", runErr)
 		}
 	})
 	time.Sleep(500 * time.Millisecond) // let the hooks attach
 	select {
-	case err := <-done:
-		t.Fatalf("collector stopped at start: %v", err)
+	case <-done:
+		stopped = true
+		t.Fatalf("collector stopped at start: %v", runErr)
 	default:
 	}
 

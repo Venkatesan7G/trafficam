@@ -401,36 +401,48 @@ static __always_inline int udp_account(struct sock *sk, struct msghdr *msg, int 
 	return 0;
 }
 
-// fexit = runs right after the function returns, with its return value.
-// We use fexit for sends because a brand-new socket only gets its local
-// port during the first send.
-SEC("fexit/udp_sendmsg")
-int BPF_PROG(on_udp_sendmsg, struct sock *sk, struct msghdr *msg, __u64 len, int ret)
+// fexit = runs right after the function returns. We use fexit for sends
+// because a brand-new socket only gets its local port during the first send.
+//
+// The argument lists of these functions change between kernels (for
+// example Linux 7.0 dropped addr_len from udp_recvmsg), and in an fexit
+// program the return value sits right after the last argument. So instead
+// of naming every argument we read only the first two (sk, msg), which
+// every version has, and get the return value with bpf_get_func_ret().
+static __always_inline int udp_exit(unsigned long long *ctx, __u8 dir, bool v4_only)
 {
+	struct sock *sk = (struct sock *)ctx[0];
+	struct msghdr *msg = (struct msghdr *)ctx[1];
+	__u64 ret = 0;
+
 	// An IPv6 socket sending to an IPv4 peer goes udpv6_sendmsg -> udp_sendmsg.
 	// Count it once, in the IPv6 hook.
-	if (BPF_CORE_READ(sk, __sk_common.skc_family) != AF_INET)
+	if (v4_only && BPF_CORE_READ(sk, __sk_common.skc_family) != AF_INET)
 		return 0;
-	return udp_account(sk, msg, ret, DIR_OUT);
+	bpf_get_func_ret(ctx, &ret);
+	return udp_account(sk, msg, (int)ret, dir);
+}
+
+SEC("fexit/udp_sendmsg")
+int on_udp_sendmsg(unsigned long long *ctx)
+{
+	return udp_exit(ctx, DIR_OUT, true);
 }
 
 SEC("fexit/udpv6_sendmsg")
-int BPF_PROG(on_udpv6_sendmsg, struct sock *sk, struct msghdr *msg, __u64 len, int ret)
+int on_udpv6_sendmsg(unsigned long long *ctx)
 {
-	return udp_account(sk, msg, ret, DIR_OUT);
+	return udp_exit(ctx, DIR_OUT, false);
 }
 
-// Since Linux 5.19 these take (sk, msg, len, flags, addr_len).
 SEC("fexit/udp_recvmsg")
-int BPF_PROG(on_udp_recvmsg, struct sock *sk, struct msghdr *msg, __u64 len, int flags,
-	     int *addr_len, int ret)
+int on_udp_recvmsg(unsigned long long *ctx)
 {
-	return udp_account(sk, msg, ret, DIR_IN);
+	return udp_exit(ctx, DIR_IN, false);
 }
 
 SEC("fexit/udpv6_recvmsg")
-int BPF_PROG(on_udpv6_recvmsg, struct sock *sk, struct msghdr *msg, __u64 len, int flags,
-	     int *addr_len, int ret)
+int on_udpv6_recvmsg(unsigned long long *ctx)
 {
-	return udp_account(sk, msg, ret, DIR_IN);
+	return udp_exit(ctx, DIR_IN, false);
 }

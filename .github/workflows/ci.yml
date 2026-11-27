@@ -40,6 +40,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -55,11 +56,11 @@ jobs:
       - name: Live tests (load eBPF into this runner's kernel)
         run: |
           go test -c -o ebpf.test ./internal/collector/linuxebpf
-          sudo TRAFFICAM_EBPF_TEST=1 ./ebpf.test -test.run Live -test.v
+          sudo TRAFFICAM_EBPF_TEST=1 ./ebpf.test -test.run Live -test.v -test.timeout 3m
       - name: Smoke test ebpfcheck against real traffic
         run: |
           go build -o ebpfcheck ./cmd/ebpfcheck
-          sudo ./ebpfcheck -for 15s > flows.jsonl &
+          sudo timeout -s KILL 60 ./ebpfcheck -for 15s > flows.jsonl &
           sleep 3
           curl -s -o /dev/null https://github.com || true
           getent hosts example.com || true

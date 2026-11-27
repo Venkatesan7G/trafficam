@@ -44,7 +44,7 @@ import (
 
 // MinKernel is the oldest kernel this collector supports: 6.1, the first
 // long-term-support kernel that has everything we use (ring buffer 5.8,
-// fentry/fexit on arm64 6.0, the 5-argument udp_recvmsg from 5.19).
+// fentry/fexit on arm64 6.0, bpf_get_func_ret 5.17).
 var MinKernel = [2]int{6, 1}
 
 // Event kinds; must match the enum in bpf/trafficam.bpf.c.
