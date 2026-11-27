@@ -115,3 +115,14 @@ func TestListSourcesAreReadEveryBatch(t *testing.T) {
 		t.Fatal("edited watch list not used")
 	}
 }
+
+func TestIgnoringAWholeProgramKeepsKnownBadAndWatch(t *testing.T) {
+	st := newStore(t)
+	s, _ := NewScorer(Config{Baseline: &baseline.Tracker{B: st},
+		Blocklist: list(t, "evil.example"), AlertAnyway: list(t, "watched.example"), Ignore: list(t, "* nc")}, nil)
+	now := time.Now()
+	v, _ := s.Score(context.Background(), []event.Minute{row(now, "nc", "evil.example"), row(now, "nc", "watched.example"), row(now, "nc", "other.example")})
+	if !v[0].Alert || !v[1].Alert || v[2].Alert {
+		t.Fatalf("got %+v", v)
+	}
+}

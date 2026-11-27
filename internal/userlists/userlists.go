@@ -63,12 +63,16 @@ func Header(k Kind) string {
 #   203.0.113.7              one IP address
 #   198.51.100.0/24          a whole network
 #   updates.example.net curl only when the program "curl" connects there
-#                            (program name, or its full path)
+#                            (program name, its full path, or its service name)
+#   * backupd                every destination of the program or service "backupd"
 #
 # Changes are picked up automatically within a few seconds.
 
 `, k, what)
 }
+
+// AnyDestination is the pattern that covers every destination of a program.
+const AnyDestination = "*"
 
 // Entry is one rule in a list.
 type Entry struct {
@@ -122,7 +126,10 @@ func Validate(pattern, program string) (Entry, error) {
 		// People often type wildcards; a plain domain already covers subdomains.
 		pattern = pattern[2:]
 	}
-	if !validPattern(pattern) {
+	if pattern == "*" && program == "" {
+		return Entry{}, errors.New("to cover every destination, name the program or service it applies to")
+	}
+	if pattern != "*" && !validPattern(pattern) {
 		return Entry{}, fmt.Errorf("%q is not a domain, IP address or network (example.com, 203.0.113.7, 198.51.100.0/24)", pattern)
 	}
 	e := Entry{Pattern: pattern, Program: program}
