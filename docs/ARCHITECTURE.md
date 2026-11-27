@@ -68,6 +68,8 @@ as a `service.Task` (see the comment in `cmd/trafficam/main.go`).
   as you. Windows DPAPI/TPM and Linux TPM2 providers should replace it.
 - Tamper handling: the store reports `ErrCannotOpen`; the loud-alert and
   self-destruct policy is not implemented yet.
+- Updates come as signed offline knowledge packs (blocklist, head C, trusted OS
+  list, ASN table); no signing key exists yet. Details: [PACKS.md](PACKS.md).
 - No offline ASN/country data file is shipped; `-asn` takes a CSV someone builds from a public snapshot.
 - The store allows one connection, so a long history read for training briefly delays inserts.
 - Real notifications (desktop toasts) are per-OS; only a log notifier exists.
