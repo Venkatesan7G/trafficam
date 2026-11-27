@@ -1,0 +1,60 @@
+# nfpm turns the built binary into .deb (Debian, Ubuntu) and .rpm (Fedora,
+# RHEL, openSUSE) packages from this one file. The release workflow runs:
+#   VERSION=0.1.0 ARCH=amd64 nfpm package -f packaging/linux/nfpm.yaml -p deb
+# ${VERSION} and ${ARCH} come from the environment.
+name: trafficam
+version: ${VERSION}
+arch: ${ARCH}
+platform: linux
+section: net
+priority: optional
+maintainer: trafficam maintainers <https://github.com/Venkatesan7G/trafficam/issues>
+description: |
+  Quiet, offline network watcher.
+  trafficam watches which program talks to which address, learns what is
+  normal for each one, and warns when a program starts calling somewhere
+  new. It is passive: it never blocks traffic and sends nothing anywhere.
+homepage: https://github.com/Venkatesan7G/trafficam
+license: GPL-3.0-or-later
+
+# The binary links glibc dynamically (SQLCipher is C code, built with cgo).
+depends:
+  - libc6
+overrides:
+  rpm:
+    depends:
+      - glibc
+
+contents:
+  - src: ./dist/trafficam
+    dst: /usr/bin/trafficam
+    file_info: { mode: 0755 }
+  - src: ./dist/ebpfcheck
+    dst: /usr/bin/trafficam-ebpfcheck
+    file_info: { mode: 0755 }
+  - src: ./packaging/linux/trafficam.service
+    dst: /usr/lib/systemd/system/trafficam.service
+    file_info: { mode: 0644 }
+  # Your lists. "config|noreplace" means an upgrade never overwrites your edits.
+  - src: ./packaging/lists/watch.txt
+    dst: /etc/trafficam/watch.txt
+    type: config|noreplace
+    file_info: { mode: 0644 }
+  - src: ./packaging/lists/ignore.txt
+    dst: /etc/trafficam/ignore.txt
+    type: config|noreplace
+    file_info: { mode: 0644 }
+  - src: ./LICENSE
+    dst: /usr/share/doc/trafficam/LICENSE
+    file_info: { mode: 0644 }
+  - src: ./README.md
+    dst: /usr/share/doc/trafficam/README.md
+    file_info: { mode: 0644 }
+  - src: ./docs/LINUX.md
+    dst: /usr/share/doc/trafficam/LINUX.md
+    file_info: { mode: 0644 }
+
+scripts:
+  postinstall: ./packaging/linux/postinstall.sh
+  preremove: ./packaging/linux/preremove.sh
+  postremove: ./packaging/linux/postremove.sh

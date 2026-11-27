@@ -1,0 +1,11 @@
+# trafficam "alert me anyway" list.
+# Any connection that matches a line here always raises an alert.
+# One rule per line; '#' starts a comment. Restart trafficam after editing:
+#   Linux:   sudo systemctl restart trafficam
+#   Windows: restart the "trafficam network watcher" service (services.msc)
+#
+# Examples:
+#   evil.example.com            this domain and all its subdomains
+#   203.0.113.7                 one IP address
+#   198.51.100.0/24             a whole network
+#   cdn.example.net firefox     only when the program "firefox" connects

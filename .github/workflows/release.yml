@@ -1,0 +1,221 @@
+name: release
+
+# Builds the downloads: a Windows installer, .deb and .rpm packages, and
+# plain archives, for x86-64 (amd64) and, on Linux, arm64.
+#
+# When it runs:
+#  - You push a version tag such as v0.1.0. It builds everything, tests it,
+#    and creates a DRAFT GitHub Release with the files attached. Nothing is
+#    public until you open the draft and press "Publish release".
+#  - A pull request changes the packaging files or this workflow. It builds
+#    the packages to prove they still work, and does not create a release.
+# It never runs on ordinary pushes, so it costs nothing day to day.
+#
+# To make a release:
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - '.github/workflows/release.yml'
+
+# One release build per tag (or per PR). A newer push to the same PR cancels
+# the old build. A tag build is never cancelled half-way.
+concurrency:
+  group: release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.24'
+  NFPM_VERSION: v2.43.0
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Built on Ubuntu 22.04 on purpose: a program built against an
+          # older glibc also runs on newer systems, but not the other way
+          # round. This covers Debian 12+, Ubuntu 22.04+, Fedora 36+, RHEL 9+.
+          - { runner: ubuntu-22.04, arch: amd64 }
+          - { runner: ubuntu-22.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '${{ env.GO_VERSION }}' }
+
+      - name: Work out the version number
+        id: ver
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.0~pr${{ github.event.pull_request.number }}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Building version $v"
+
+      - name: Tests (tag builds only; PRs are already tested by ci)
+        if: github.ref_type == 'tag'
+        run: go vet ./... && go test -timeout 5m ./...
+        timeout-minutes: 8
+
+      - name: Build
+        timeout-minutes: 5
+        env: { CGO_ENABLED: '1' }
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" -o dist/trafficam ./cmd/trafficam
+          go build -trimpath -ldflags "-s -w" -o dist/ebpfcheck ./cmd/ebpfcheck
+          ./dist/trafficam version
+
+      - name: Install nfpm (the .deb/.rpm packager)
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@${{ env.NFPM_VERSION }}
+        timeout-minutes: 5
+
+      - name: Make .deb, .rpm and .tar.gz
+        timeout-minutes: 3
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p out
+          nfpm package -f packaging/linux/nfpm.yaml -p deb -t out/
+          nfpm package -f packaging/linux/nfpm.yaml -p rpm -t out/
+          name="trafficam-${VERSION}-linux-${ARCH}"
+          mkdir -p "$name"
+          cp dist/trafficam dist/ebpfcheck LICENSE README.md docs/LINUX.md packaging/linux/trafficam.service packaging/lists/*.txt "$name/"
+          tar -czf "out/$name.tar.gz" "$name"
+          ls -l out
+
+      - name: Check the .deb installs and runs
+        timeout-minutes: 3
+        run: |
+          sudo dpkg -i out/*.deb
+          trafficam version
+          test -f /usr/lib/systemd/system/trafficam.service
+          test -f /etc/trafficam/watch.txt
+          systemd-analyze verify /usr/lib/systemd/system/trafficam.service
+          sudo dpkg --purge trafficam
+          ! test -e /usr/bin/trafficam
+
+      - uses: actions/upload-artifact@v4
+        timeout-minutes: 3
+        with:
+          name: linux-${{ matrix.arch }}
+          path: out/*
+          retention-days: 3
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '${{ env.GO_VERSION }}' }
+
+      - name: Work out the version number
+        id: ver
+        shell: bash
+        run: |
+          # Inno Setup wants plain numbers and dots or a "-" suffix.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.0-pr${{ github.event.pull_request.number }}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Tests (tag builds only)
+        if: github.ref_type == 'tag'
+        run: go vet ./... ; if ($LASTEXITCODE -ne 0) { exit 1 } ; go test -timeout 5m ./...
+        timeout-minutes: 10
+        env:
+          TRAFFICAM_REQUIRE_ETW: '1'
+
+      - name: Build trafficam.exe
+        timeout-minutes: 5
+        shell: bash
+        env: { CGO_ENABLED: '1' }
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.version=${{ steps.ver.outputs.version }}" -o dist/trafficam.exe ./cmd/trafficam
+          ./dist/trafficam.exe version
+
+      - name: Install Inno Setup if the runner lacks it
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "Inno Setup not found at $iscc" }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Build the installer and the .zip
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          & $env:ISCC "/DAppVersion=$v" "/DSourceDir=$PWD\dist" packaging\windows\trafficam.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          New-Item -ItemType Directory -Force out | Out-Null
+          Move-Item "dist\trafficam-$v-windows-amd64-setup.exe" out\
+          $z = "trafficam-$v-windows-amd64"
+          New-Item -ItemType Directory -Force $z | Out-Null
+          Copy-Item dist\trafficam.exe, LICENSE, README.md, docs\WINDOWS.md, packaging\lists\*.txt $z
+          Compress-Archive -Path $z -DestinationPath "out\$z.zip"
+          Get-ChildItem out
+
+      - name: Check the installer installs, starts the service, and uninstalls
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem out\*-setup.exe).FullName
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG=install.log' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content install.log; throw "install failed: $($p.ExitCode)" }
+          & "$env:ProgramFiles\trafficam\trafficam.exe" version
+          Start-Sleep 5
+          $s = Get-Service trafficam
+          "service status: $($s.Status)"
+          if ($s.Status -ne 'Running') { Get-Content "$env:ProgramData\trafficam\trafficam.log" -ErrorAction SilentlyContinue; throw "service is not running" }
+          $un = "$env:ProgramFiles\trafficam\unins000.exe"
+          $p = Start-Process $un -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "uninstall failed: $($p.ExitCode)" }
+          Start-Sleep 3
+          if (Get-Service trafficam -ErrorAction SilentlyContinue) { throw "service still registered after uninstall" }
+          "install, start and uninstall all worked"
+
+      - uses: actions/upload-artifact@v4
+        timeout-minutes: 3
+        with:
+          name: windows-amd64
+          path: out/*
+          retention-days: 3
+
+  # Only for tags: gather every file, add a checksum list, and create a draft
+  # release. You publish it by hand after a look.
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # needed to create the release
+    steps:
+      - uses: actions/download-artifact@v4
+        timeout-minutes: 3
+        with:
+          path: files
+          merge-multiple: true
+      - name: Checksums
+        working-directory: files
+        run: sha256sum * | tee SHA256SUMS.txt
+      - name: Create a draft release
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" files/* \
+            --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "trafficam $GITHUB_REF_NAME" --generate-notes
