@@ -8,6 +8,8 @@
 //	trafficam record [-data DIR] -out FILE     save synthetic traffic to a replay file
 //	trafficam replay [-data DIR] FILE          run the pipeline on a replay file
 //	trafficam dump   [-data DIR]               print what is stored
+//	trafficam live   [-data DIR]               watch this PC's real traffic (needs admin/root)
+//	trafficam service install|uninstall|start|stop   (Windows) run "live" as a Windows service
 //
 // Optional offline lists, all off unless a file is given (see docs/ARCHITECTURE.md):
 //
@@ -43,10 +45,22 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump [flags]")
-		os.Exit(2)
+		if runningAsService() { // started by the Windows Service Control Manager
+			os.Args = append(os.Args, "service", "run")
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service [flags]")
+			os.Exit(2)
+		}
 	}
 	cmd, args := os.Args[1], os.Args[2:]
+	if cmd == "service" {
+		// "trafficam service <action> [flags]": the action comes before the flags.
+		if err := serviceCommand(args); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	data := fs.String("data", defaultDataDir(), "folder for the encrypted database and key")
 	n := fs.Int("n", 600, "demo/record: number of synthetic flows")
@@ -75,6 +89,8 @@ func main() {
 		err = run(ctx, *data, &replay.Player{Path: fs.Arg(0)}, true, lf)
 	case "dump":
 		err = dump(*data)
+	case "live":
+		err = runLive(ctx, *data, lf)
 	default:
 		err = fmt.Errorf("unknown command %q", cmd)
 	}
@@ -82,6 +98,20 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// runLive runs the pipeline on this PC's real traffic until ctx is
+// cancelled. liveCollector comes from live_<os>.go.
+func runLive(ctx context.Context, dir string, lf listFiles) error {
+	c, err := liveCollector()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "trafficam: watching with %s, data in %s (Ctrl+C to stop)\n", c.Name(), dir)
+	return run(ctx, dir, c, false, lf)
 }
 
 func syntheticSource(n int) collector.Collector {
