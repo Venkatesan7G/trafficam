@@ -55,6 +55,13 @@ type Summary struct {
 
 // Summarise turns a replay into per-day numbers and alert events.
 func Summarise(r *Result, installGrace time.Duration) *Summary {
+	return SummariseLabelled(r, installGrace, nil)
+}
+
+// SummariseLabelled is Summarise for data with planted attacks: rows with a
+// label are left out of the alert counts, so the numbers are false alarms
+// only. (Attack rows still count as rows of the day.)
+func SummariseLabelled(r *Result, installGrace time.Duration, labels Labels) *Summary {
 	if installGrace <= 0 {
 		installGrace = 48 * time.Hour
 	}
@@ -75,7 +82,7 @@ func Summarise(r *Result, installGrace time.Duration) *Summary {
 		if o.Phase != "" {
 			ds.Phase = o.Phase
 		}
-		if !o.Alert {
+		if !o.Alert || (labels != nil && labels[i] != "") {
 			continue
 		}
 		ds.AlertRows++
