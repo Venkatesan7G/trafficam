@@ -44,8 +44,21 @@ func TestRoundTripAndEncryptedOnDisk(t *testing.T) {
 		t.Fatal("database is not encrypted on disk")
 	}
 	// Wrong key must be refused.
-	if _, err := Open(path, key(2)); !errors.Is(err, ErrCannotOpen) {
-		t.Fatalf("want ErrCannotOpen, got %v", err)
+	if _, err := Open(path, key(2)); !errors.Is(err, ErrCannotOpen) || !IsWrongKey(err) {
+		t.Fatalf("want ErrCannotOpen and IsWrongKey, got %v", err)
+	}
+	// Garbage in place of the database also counts as "wrong key".
+	os.WriteFile(path, bytes.Repeat([]byte{0xAB}, 8192), 0o600)
+	os.Remove(path + "-wal")
+	os.Remove(path + "-shm")
+	if _, err := Open(path, key(1)); !IsWrongKey(err) {
+		t.Fatalf("garbage file: want IsWrongKey, got %v", err)
+	}
+}
+
+func TestIsWrongKeyIgnoresOtherErrors(t *testing.T) {
+	if IsWrongKey(errors.New("database is locked")) || IsWrongKey(ErrCannotOpen) {
+		t.Fatal("IsWrongKey must need a real SQLITE_NOTADB")
 	}
 }
 

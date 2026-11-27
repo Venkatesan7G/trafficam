@@ -27,6 +27,17 @@ const DBSchemaVersion = 3
 // policy is a loud alert, then self-destruct; that lives above this package).
 var ErrCannotOpen = errors.New("store: database cannot be opened with this key (wrong key, corrupt or tampered)")
 
+// IsWrongKey reports whether err means the key positively does not unlock
+// the file (SQLite "file is not a database"). Unlike ErrCannotOpen in
+// general, it excludes "busy", "locked", "disk I/O error" and similar
+// problems that are not evidence of tampering. The tamper response uses it.
+//
+// It matches SQLite's fixed message for SQLITE_NOTADB (code 26) rather than
+// the driver's error type, so this package still builds without cgo.
+func IsWrongKey(err error) bool {
+	return err != nil && errors.Is(err, ErrCannotOpen) && strings.Contains(err.Error(), "file is not a database")
+}
+
 type Store struct{ db *sql.DB }
 
 // Open opens (creating if needed) the encrypted database at path.
@@ -47,7 +58,7 @@ func Open(path string, key []byte) (*Store, error) {
 	// The first real query is where a wrong key shows up.
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("%w: %v", ErrCannotOpen, err)
+		return nil, fmt.Errorf("%w: %w", ErrCannotOpen, err)
 	}
 	if err := s.migrate(); err != nil {
 		db.Close()
@@ -112,7 +123,7 @@ CREATE INDEX IF NOT EXISTS minutes_prog  ON minutes(prog_key, start);
 INSERT OR IGNORE INTO meta(k,v) VALUES('db_schema', '1');
 `)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrCannotOpen, err)
+		return fmt.Errorf("%w: %w", ErrCannotOpen, err)
 	}
 	var v int
 	var vs string
