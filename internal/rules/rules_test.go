@@ -93,3 +93,25 @@ func TestModelFailureStillGivesRuleAnswers(t *testing.T) {
 		t.Fatalf("err=%v v=%+v reported=%d", err, v, len(got))
 	}
 }
+
+// swappable is a blocklist.Source whose list the test can change.
+type swappable struct{ l *blocklist.List }
+
+func (s *swappable) Current() *blocklist.List { return s.l }
+
+func TestListSourcesAreReadEveryBatch(t *testing.T) {
+	st := newStore(t)
+	watch := &swappable{}
+	s, _ := NewScorer(Config{Baseline: &baseline.Tracker{B: st}, WatchSource: watch,
+		AlertAnyway: list(t, "stale.example")}, nil)
+	now := time.Now()
+	v, _ := s.Score(context.Background(), []event.Minute{row(now, "a", "stale.example"), row(now, "a", "new.example")})
+	if v[0].Alert || v[1].Alert {
+		t.Fatalf("WatchSource must replace AlertAnyway: %+v", v)
+	}
+	watch.l = list(t, "new.example") // the user added a rule while running
+	v, _ = s.Score(context.Background(), []event.Minute{row(now, "a", "new.example")})
+	if !v[0].Alert {
+		t.Fatal("edited watch list not used")
+	}
+}

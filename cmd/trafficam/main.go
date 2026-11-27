@@ -10,12 +10,16 @@
 //	trafficam dump   [-data DIR]               print what is stored
 //	trafficam live   [-data DIR]               watch this PC's real traffic (needs admin/root)
 //	trafficam service install|uninstall|start|stop   (Windows) run "live" as a Windows service
+//	trafficam lists [show|add|remove|edit|path] ...  view and change your watch and ignore lists
 //
 // Optional offline lists, all off unless a file is given (see docs/ARCHITECTURE.md):
 //
 //	-blocklist FILE   known-bad snapshot: matches always alert
-//	-watch FILE       your "alert me anyway" list
-//	-ignore FILE      your "ignore" list
+//	-watch FILE       your "alert me anyway" list (default: <data>/watch.txt if it exists)
+//	-ignore FILE      your "ignore" list (default: <data>/ignore.txt if it exists)
+//
+// The watch and ignore lists are re-read automatically when they change.
+//
 //	-asn FILE         offline CIDR -> ASN,country table
 package main
 
@@ -42,6 +46,7 @@ import (
 	"github.com/Venkatesan7G/trafficam/internal/rules"
 	"github.com/Venkatesan7G/trafficam/internal/service"
 	"github.com/Venkatesan7G/trafficam/internal/store"
+	"github.com/Venkatesan7G/trafficam/internal/userlists"
 )
 
 func main() {
@@ -49,7 +54,7 @@ func main() {
 		if runningAsService() { // started by the Windows Service Control Manager
 			os.Args = append(os.Args, "service", "run")
 		} else {
-			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service [flags]")
+			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service|lists [flags]")
 			os.Exit(2)
 		}
 	}
@@ -57,6 +62,13 @@ func main() {
 	if cmd == "service" {
 		// "trafficam service <action> [flags]": the action comes before the flags.
 		if err := serviceCommand(args); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if cmd == "lists" {
+		if err := listsCommand(args); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -163,10 +175,24 @@ func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, l
 	}
 	defer st.Close()
 
-	var lists [3]*blocklist.List
-	for i, p := range []string{lf.blocklist, lf.watch, lf.ignore} {
-		if lists[i], err = loadList(p); err != nil {
-			return err
+	known, err := loadList(lf.blocklist)
+	if err != nil {
+		return err
+	}
+	// Your own lists live in the data folder unless named on the command
+	// line, and are re-read when they change ("trafficam lists add ...").
+	var userLists [2]*blocklist.Reloading
+	for i, k := range []userlists.Kind{userlists.Watch, userlists.Ignore} {
+		p := []string{lf.watch, lf.ignore}[i]
+		if p == "" {
+			p = userlists.Path(dir, k)
+		}
+		if userLists[i], err = blocklist.NewReloading(p); err != nil {
+			return fmt.Errorf("your %s list: %w", k, err)
+		}
+		k := k
+		userLists[i].OnError = func(e error) {
+			log.Error("your "+string(k)+" list has a mistake; still using the previous version", "err", e)
 		}
 	}
 	var enricher aggregate.Enricher
@@ -207,7 +233,7 @@ func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, l
 
 	scorer, err := rules.NewScorer(rules.Config{
 		Baseline:  &baseline.Tracker{B: st},
-		Blocklist: lists[0], AlertAnyway: lists[1], Ignore: lists[2],
+		Blocklist: known, WatchSource: userLists[0], IgnoreSource: userLists[1],
 	}, learner)
 	if err != nil {
 		return err
