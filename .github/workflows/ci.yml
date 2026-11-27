@@ -13,6 +13,23 @@ jobs:
         with: { go-version: '1.24' }
       - run: go vet ./...
       - run: go test ./...
+        env:
+          # Windows runners are administrators, so the real ETW capture tests
+          # must run there: fail instead of skipping if they cannot.
+          TRAFFICAM_REQUIRE_ETW: '1'
+      - name: ETW capture report (Windows)
+        if: runner.os == 'Windows'
+        run: go test -count=1 -v ./internal/collector/etw/
+        env:
+          TRAFFICAM_REQUIRE_ETW: '1'
+      - name: Build trafficam.exe
+        if: runner.os == 'Windows'
+        run: go build -o trafficam.exe ./cmd/trafficam
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: trafficam-windows-amd64
+          path: trafficam.exe
 
   # Linux eBPF collector: rebuild the eBPF bytecode from C, then load it into
   # the runner's real kernel and check the flows (needs sudo, which GitHub's

@@ -11,6 +11,7 @@
 |---|---|
 | `internal/event` | `Flow` (raw observation) and `Minute` (per-minute rollup), both with a schema version. |
 | `internal/collector` | **`Collector` interface** the OS capture layers implement, plus a synthetic mock. |
+| `internal/collector/etw` | Windows capture via ETW, no driver. See [WINDOWS.md](WINDOWS.md). |
 | `internal/replay` | Record flows to JSONL(.gz) and play them back as a collector. |
 | `internal/aggregate` | Rolls flows into one row per minute per (program, proto, dir, host, port). |
 | `internal/score` | **`Scorer` interface** the model implements, plus `Notifier` and a no-op scorer. |
@@ -70,4 +71,5 @@ as a `service.Task` (see the comment in `cmd/trafficam/main.go`).
 - No offline ASN/country data file is shipped; `-asn` takes a CSV someone builds from a public snapshot.
 - The store allows one connection, so a long history read for training briefly delays inserts.
 - Real notifications (desktop toasts) are per-OS; only a log notifier exists.
+- `Program.Service` (schema v3) holds the Windows service / systemd unit; `Key()` appends it so services sharing svchost.exe get separate baselines.
 - Cross-compiling for Windows needs a cgo toolchain (e.g. mingw) because of SQLCipher.

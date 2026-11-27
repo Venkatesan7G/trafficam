@@ -8,6 +8,8 @@
 //	trafficam record [-data DIR] -out FILE     save synthetic traffic to a replay file
 //	trafficam replay [-data DIR] FILE          run the pipeline on a replay file
 //	trafficam dump   [-data DIR]               print what is stored
+//	trafficam live   [-data DIR]               watch this PC's real traffic (needs admin/root)
+//	trafficam service install|uninstall|start|stop   (Windows) run "live" as a Windows service
 //
 // Optional offline lists, all off unless a file is given (see docs/ARCHITECTURE.md):
 //
@@ -34,19 +36,32 @@ import (
 	"github.com/Venkatesan7G/trafficam/internal/enrich"
 	"github.com/Venkatesan7G/trafficam/internal/event"
 	"github.com/Venkatesan7G/trafficam/internal/keyseal"
+	"github.com/Venkatesan7G/trafficam/internal/model"
+	"github.com/Venkatesan7G/trafficam/internal/modelscore"
 	"github.com/Venkatesan7G/trafficam/internal/replay"
 	"github.com/Venkatesan7G/trafficam/internal/rules"
-	"github.com/Venkatesan7G/trafficam/internal/score"
 	"github.com/Venkatesan7G/trafficam/internal/service"
 	"github.com/Venkatesan7G/trafficam/internal/store"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump [flags]")
-		os.Exit(2)
+		if runningAsService() { // started by the Windows Service Control Manager
+			os.Args = append(os.Args, "service", "run")
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: trafficam demo|record|replay|dump|live|service [flags]")
+			os.Exit(2)
+		}
 	}
 	cmd, args := os.Args[1], os.Args[2:]
+	if cmd == "service" {
+		// "trafficam service <action> [flags]": the action comes before the flags.
+		if err := serviceCommand(args); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	data := fs.String("data", defaultDataDir(), "folder for the encrypted database and key")
 	n := fs.Int("n", 600, "demo/record: number of synthetic flows")
@@ -56,6 +71,7 @@ func main() {
 	fs.StringVar(&lf.watch, "watch", "", "your alert-anyway list")
 	fs.StringVar(&lf.ignore, "ignore", "", "your ignore list")
 	fs.StringVar(&lf.asn, "asn", "", "offline ASN/country table (CSV)")
+	fs.StringVar(&lf.prior, "prior", "", "head C prior-risk weights (TCW1 file); empty = head C off")
 	fs.Parse(args)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -75,6 +91,8 @@ func main() {
 		err = run(ctx, *data, &replay.Player{Path: fs.Arg(0)}, true, lf)
 	case "dump":
 		err = dump(*data)
+	case "live":
+		err = runLive(ctx, *data, lf)
 	default:
 		err = fmt.Errorf("unknown command %q", cmd)
 	}
@@ -82,6 +100,20 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// runLive runs the pipeline on this PC's real traffic until ctx is
+// cancelled. liveCollector comes from live_<os>.go.
+func runLive(ctx context.Context, dir string, lf listFiles) error {
+	c, err := liveCollector()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "trafficam: watching with %s, data in %s (Ctrl+C to stop)\n", c.Name(), dir)
+	return run(ctx, dir, c, false, lf)
 }
 
 func syntheticSource(n int) collector.Collector {
@@ -114,7 +146,7 @@ func openStore(dir string) (*store.Store, error) {
 }
 
 // listFiles are the optional offline files named on the command line.
-type listFiles struct{ blocklist, watch, ignore, asn string }
+type listFiles struct{ blocklist, watch, ignore, asn, prior string }
 
 func loadList(path string) (*blocklist.List, error) {
 	if path == "" {
@@ -146,20 +178,37 @@ func run(ctx context.Context, dir string, c collector.Collector, oneShot bool, l
 		enricher = t
 	}
 
-	// The model plugs in here. Until the model PR is merged this is score.Nop,
-	// and only the rules produce alerts. Once it is merged:
-	//
-	//	m, _ := modelscore.New(modelscore.Config{History: st, ...})
-	//	model = m
-	//	tasks = append(tasks, service.Task{Name: "nightly-training",
-	//	        Run: func(ctx context.Context) error { m.Loop(ctx); return nil }})
-	var model score.Scorer = score.Nop{}
+	// The learning model: scores every row, trains itself nightly on the
+	// stored history, and keeps its state in <data>/model.tcw. Head C is a user
+	// switch (--prior); without it the model runs on its own.
+	var prior *model.HeadC
+	if lf.prior != "" {
+		raw, err := os.ReadFile(lf.prior)
+		if err != nil {
+			return err
+		}
+		w, err := model.DecodeWeights(raw)
+		if err != nil {
+			return err
+		}
+		if prior, err = model.LoadHeadC(w); err != nil {
+			return err
+		}
+	}
+	learner, err := modelscore.New(modelscore.Config{
+		ModelPath: filepath.Join(dir, "model.tcw"), History: st, Prior: prior, Log: log,
+	})
+	if err != nil {
+		return err
+	}
 	var tasks []service.Task
+	tasks = append(tasks, service.Task{Name: "nightly-training",
+		Run: func(ctx context.Context) error { learner.Loop(ctx); return nil }})
 
 	scorer, err := rules.NewScorer(rules.Config{
 		Baseline:  &baseline.Tracker{B: st},
 		Blocklist: lists[0], AlertAnyway: lists[1], Ignore: lists[2],
-	}, model)
+	}, learner)
 	if err != nil {
 		return err
 	}

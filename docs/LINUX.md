@@ -53,8 +53,6 @@ Connections from the PC to itself (127.0.0.1, ::1) are left out by default.
 - TCP byte counts come from sequence numbers, so SYN/FIN can add 1–2 bytes.
 - Some locked-down or virtual kernels refuse fentry/fexit hooks. Then trafficam
   logs a loud error and keeps watching TCP only, without UDP or DNS owners.
-- The systemd unit is worked out (tested) but not yet passed on, because
-  `event.Program.Service` arrives with the Windows collector PR. See `unit.go`.
 
 ## Test it on your own Linux machine
 
