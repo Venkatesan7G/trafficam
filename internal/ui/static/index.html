@@ -57,10 +57,10 @@
     <div class="grid2">
       <div class="card">
         <h2>Watch list</h2>
-        <p class="muted small">Always alert for these, even when they look normal.</p>
+        <p class="muted small">Always alert for these, even when they look normal. Leave the destination empty and name a program to hear about everything that program connects to.</p>
         <form id="watch-form" class="addform" autocomplete="off">
-          <input id="w-pattern" placeholder="example.com, 203.0.113.7 or 198.51.100.0/24" required maxlength="253" aria-label="Domain, IP or network">
-          <input id="w-program" placeholder="only for program (optional)" maxlength="200" aria-label="Program">
+          <input id="w-pattern" placeholder="example.com, 203.0.113.7 or 198.51.100.0/24" maxlength="253" aria-label="Domain, IP or network">
+          <input id="w-program" placeholder="program or service (optional)" maxlength="200" aria-label="Program or service">
           <button type="submit" class="primary">Add</button>
         </form>
         <p class="error" id="watch-error" hidden></p>
@@ -70,7 +70,7 @@
         <h2>Ignore list</h2>
         <p class="muted small">Never raise a "new" or "unusual" alert for these. They never silence the known-bad list or your watch list.</p>
         <ul class="rules" id="ignore"></ul>
-        <p class="muted small">To add to this list, press <b>Don't show again</b> on an alert. To add other rules, or to take rules off the watch list, run <code>trafficam lists</code> in an administrator terminal. Changes that make trafficam quieter need an administrator, so other programs on this computer can't make them.</p>
+        <p class="muted small">To add to this list, press <b>Don't show again</b> on an alert. To add other rules, such as ignoring a whole program (<code>trafficam lists add ignore -program NAME</code>), or to take rules off the watch list, use <code>trafficam lists</code> in an administrator terminal. Changes that make trafficam quieter need an administrator, so other programs on this computer can't make them.</p>
       </div>
     </div>
   </section>

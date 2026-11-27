@@ -144,7 +144,7 @@ $("show-all").addEventListener("change", () => loadAlerts().catch(offline));
 // ---- lists
 function ruleItem(r, removable) {
   const li = el("li");
-  const t = el("span", "", r.pattern + (r.program ? `  (only ${r.program})` : ""));
+  const t = el("span", "", r.pattern === "*" ? `Every destination of ${r.program}` : r.pattern + (r.program ? `  (only ${r.program})` : ""));
   if (r.note) t.append(el("span", "note", r.note));
   li.append(t);
   if (removable) {
@@ -171,7 +171,10 @@ $("watch-form").addEventListener("submit", async (ev) => {
   const err = $("watch-error");
   err.hidden = true;
   try {
-    renderLists(await api("/api/lists/watch/add", { post: true, body: { pattern: $("w-pattern").value.trim(), program: $("w-program").value.trim() } }));
+    const program = $("w-program").value.trim();
+    // An empty destination with a program means "everything this program does".
+    const pattern = $("w-pattern").value.trim() || (program ? "*" : "");
+    renderLists(await api("/api/lists/watch/add", { post: true, body: { pattern, program } }));
     $("w-pattern").value = "";
     $("w-program").value = "";
   } catch (e) {
