@@ -43,6 +43,14 @@ type Config struct {
 	Grace      time.Duration // how late a flow may arrive and still count (default 1m)
 	FlushEvery time.Duration // live mode: how often to close old minutes (default 10s)
 
+	// Tasks are long-running background jobs (the model's nightly training
+	// loop, database pruning). Each runs in its own supervised goroutine with
+	// the same panic recovery and restart-with-backoff as the collector.
+	Tasks []Task
+
+	// Enrich, if set, adds ASN and country to rows from an offline table.
+	Enrich aggregate.Enricher
+
 	// OneShot ends the service when the collector finishes without error
 	// (used for replay files). It also makes the queue lossless (emit waits
 	// instead of dropping), since replay has no live traffic to protect. When false, a collector that returns is
@@ -53,6 +61,32 @@ type Config struct {
 	// it doubles up to MaxBackoff.
 	RestartBackoff time.Duration
 	MaxBackoff     time.Duration
+}
+
+// Task is a background job. Run must return when ctx is cancelled. If it
+// returns early or panics it is restarted with backoff.
+type Task struct {
+	Name string
+	Run  func(ctx context.Context) error
+}
+
+// Every wraps fn so it runs once now-ish (after `first`) and then every
+// `interval`, until ctx is cancelled. Handy for pruning and similar jobs.
+func Every(name string, first, interval time.Duration, fn func(ctx context.Context) error) Task {
+	return Task{Name: name, Run: func(ctx context.Context) error {
+		wait := first
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(wait):
+			}
+			if err := fn(ctx); err != nil {
+				return err // supervisor logs it and restarts us
+			}
+			wait = interval
+		}
+	}}
 }
 
 // Stats are cheap counters, safe to read while running.
@@ -114,7 +148,17 @@ func (s *Service) Run(ctx context.Context) error {
 		defer close(s.queue) // lets the processor drain and finish
 		s.superviseCollector(ctx)
 	}()
+	// Background tasks stop when the main context ends or the pipeline is done.
+	taskCtx, stopTasks := context.WithCancel(ctx)
+	for _, t := range s.cfg.Tasks {
+		wg.Add(1)
+		go func(t Task) {
+			defer wg.Done()
+			s.superviseTask(taskCtx, t)
+		}(t)
+	}
 	s.process(ctx) // returns once queue is closed and drained
+	stopTasks()
 	wg.Wait()
 	return nil
 }
@@ -138,6 +182,27 @@ func (s *Service) superviseCollector(ctx context.Context) {
 		if time.Since(started) > 5*time.Minute {
 			backoff = s.cfg.RestartBackoff // it ran fine for a while; reset
 		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > s.cfg.MaxBackoff {
+			backoff = s.cfg.MaxBackoff
+		}
+	}
+}
+
+// superviseTask runs a background task, restarting it if it fails or panics.
+func (s *Service) superviseTask(ctx context.Context, t Task) {
+	backoff := s.cfg.RestartBackoff
+	for ctx.Err() == nil {
+		err := s.safely("task "+t.Name, func() error { return t.Run(ctx) })
+		if ctx.Err() != nil {
+			return
+		}
+		s.Stats.Restarts.Add(1)
+		s.log.Error("task stopped; restarting", "task", t.Name, "err", err, "in", backoff)
 		select {
 		case <-ctx.Done():
 			return
@@ -174,6 +239,7 @@ func (s *Service) emit(f event.Flow) {
 // process is the single goroutine that owns the aggregator.
 func (s *Service) process(ctx context.Context) {
 	agg := aggregate.New()
+	agg.Enrich = s.cfg.Enrich
 	tick := time.NewTicker(s.cfg.FlushEvery)
 	defer tick.Stop()
 	for {
