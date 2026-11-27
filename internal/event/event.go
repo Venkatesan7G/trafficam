@@ -24,7 +24,8 @@ import (
 // SchemaVersion is the version of the Flow and Minute formats.
 // v2 added Minute.ASN, Country and DurationMs, and Flow.Duration.
 // v3 added Program.Service.
-const SchemaVersion = 3
+// v4 added Flow.Cont.
+const SchemaVersion = 4
 
 // Proto is the transport protocol of a flow.
 type Proto string
@@ -89,6 +90,12 @@ type Flow struct {
 	Packets     uint64         `json:"pkts,omitempty"`
 	Duration    time.Duration  `json:"dur,omitempty"` // how long the connection lasted, if the collector knows
 	Established bool           `json:"est,omitempty"` // TCP handshake completed (distinguishes scans from real connections)
+	// Cont marks a later report of a connection that was already reported
+	// once (a long download reported minute by minute, or the closing totals
+	// of a connection first reported while still open). Its bytes, packets
+	// and Duration cover only the time since the previous report, so they can
+	// simply be added up, but it must not be counted as another connection.
+	Cont bool `json:"cont,omitempty"`
 }
 
 // Host is the destination as a human would name it: the DNS name if we know

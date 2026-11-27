@@ -12,6 +12,7 @@ package linuxebpf
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -160,6 +161,40 @@ func TestLiveTCP(t *testing.T) {
 	})
 }
 
+// A connection open longer than TCPReportAfter (1 s here) is reported
+// early and again when it closes; the second report is marked Cont so the
+// connection is counted once.
+func TestLiveLongTCP(t *testing.T) {
+	waitFor := liveRun(t)
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			io.Copy(io.Discard, c)
+			c.Close()
+		}
+	}()
+	conn, err := net.Dial("tcp4", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := uint16(ln.Addr().(*net.TCPAddr).Port)
+	mine := func(f event.Flow) bool {
+		return isMe(f) && f.Proto == event.TCP && f.Dir == event.Outbound && f.Remote.Port() == port
+	}
+	early := waitFor("early report of a long TCP connection", func(f event.Flow) bool { return mine(f) && !f.Cont })
+	conn.Write(make([]byte, 500))
+	conn.Close()
+	last := waitFor("closing report", func(f event.Flow) bool { return mine(f) && f.Cont })
+	if !near(last.BytesOut, 500) || early.Duration <= 0 || last.Duration <= 0 {
+		t.Errorf("early %+v, last %+v", early, last)
+	}
+}
+
 func TestLiveUDPAndDNS(t *testing.T) {
 	if !probeFentry() {
 		t.Skip("this kernel refuses fentry/fexit hooks, so UDP cannot be watched here")
@@ -196,21 +231,23 @@ func TestLiveUDPAndDNS(t *testing.T) {
 	answer := netip.MustParseAddr("192.0.2.77")
 	go func() {
 		buf := make([]byte, 1500)
-		n, from, err := dns.ReadFromUDP(buf)
-		if err != nil {
-			return
+		for {
+			n, from, err := dns.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			var p dnsmessage.Parser
+			h, _ := p.Start(buf[:n])
+			q, _ := p.Question()
+			b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: h.ID, Response: true})
+			b.StartQuestions()
+			b.Question(q)
+			b.StartAnswers()
+			b.AResource(dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: 120},
+				dnsmessage.AResource{A: answer.As4()})
+			msg, _ := b.Finish()
+			dns.WriteToUDP(msg, from)
 		}
-		var p dnsmessage.Parser
-		h, _ := p.Start(buf[:n])
-		q, _ := p.Question()
-		b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: h.ID, Response: true})
-		b.StartQuestions()
-		b.Question(q)
-		b.StartAnswers()
-		b.AResource(dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: 120},
-			dnsmessage.AResource{A: answer.As4()})
-		msg, _ := b.Finish()
-		dns.WriteToUDP(msg, from)
 	}()
 	r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return net.Dial("udp4", "127.0.0.1:53")
@@ -222,6 +259,27 @@ func TestLiveUDPAndDNS(t *testing.T) {
 	waitFor("DNS lookup", func(f event.Flow) bool {
 		return isMe(f) && f.Proto == event.DNS && f.DNSName == "trafficam-test.example"
 	})
+
+	// Many lookups in a row, each from a brand-new socket to the same
+	// server. The kernel reuses a closed socket's memory for the next one,
+	// which once made about 1 in 15 lookups show up as program "unknown".
+	// Every one of them must be ours.
+	const many = 40
+	for i := 0; i < many; i++ {
+		name := fmt.Sprintf("n%d.trafficam-test.example", i)
+		if _, err := r.LookupNetIP(context.Background(), "ip4", name); err != nil {
+			t.Fatalf("lookup %s: %v", name, err)
+		}
+	}
+	for i := 0; i < many; i++ {
+		name := fmt.Sprintf("n%d.trafficam-test.example", i)
+		f := waitFor("DNS lookup "+name, func(f event.Flow) bool {
+			return f.Proto == event.DNS && f.DNSName == name
+		})
+		if !isMe(f) {
+			t.Errorf("lookup %s credited to %+v, want this test (pid %d)", name, f.Program, os.Getpid())
+		}
+	}
 
 	// 192.0.2.0/24 is unroutable, so this connect fails; we only need the
 	// attempt, labelled with the name.

@@ -86,14 +86,24 @@ struct conn {
 	__u8 has_owner;
 };
 
-// UDP counters, keyed by (socket, remote address). User space reads and
-// deletes idle entries.
+// UDP counters, keyed by (socket, local port, remote address). User space
+// reads and deletes idle entries.
+//
+// Why the local port is in the key: the kernel reuses the memory of a closed
+// socket for the next one, so a new socket often gets the same address
+// (sk). DNS clients open a fresh socket for every lookup and always talk to
+// the same resolver, so without the port a new lookup would land on the old
+// socket's entry: no "new peer" step, so udp_owner was never updated for the
+// new port, and the lookup showed up with program "unknown" (about 1 in 15
+// on busy machines). The new socket has a new random local port, so with the
+// port in the key it gets its own entry.
 struct udp_key {
 	__u64 sk;
 	__u8 raddr[16];
 	__u16 rport;
 	__u16 family;
-	__u32 pad;
+	__u16 lport;
+	__u16 pad;
 };
 
 struct udp_val {
@@ -347,6 +357,7 @@ static __always_inline int udp_account(struct sock *sk, struct msghdr *msg, int 
 		}
 	}
 	__u16 skfam = BPF_CORE_READ(sk, __sk_common.skc_family);
+	k.lport = BPF_CORE_READ(sk, __sk_common.skc_num);
 	if (k.family == 0) {
 		// Connected socket: the peer is stored on the socket.
 		__u8 dummy[16];
@@ -369,7 +380,7 @@ static __always_inline int udp_account(struct sock *sk, struct msghdr *msg, int 
 		nv.dir = dir;
 		read_addrs(sk, skfam, nv.laddr, dummy, &nv.lport, &dp);
 		bpf_map_update_elem(&udp_flows, &k, &nv, BPF_NOEXIST);
-		bpf_map_update_elem(&udp_owner, &nv.lport, &nv.o, BPF_ANY);
+		bpf_map_update_elem(&udp_owner, &k.lport, &nv.o, BPF_ANY);
 
 		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 		if (e) {

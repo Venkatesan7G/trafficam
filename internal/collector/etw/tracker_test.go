@@ -167,6 +167,10 @@ func TestTrackerInterimAndUDPIdle(t *testing.T) {
 	if total != 90*48 {
 		t.Fatalf("bytes lost or double counted: %d", total)
 	}
+	// One connection: only the first report counts as a new connection.
+	if h.flows[0].Cont || !h.flows[1].Cont {
+		t.Fatalf("Cont = %v, %v; want false, true", h.flows[0].Cont, h.flows[1].Cont)
+	}
 }
 
 func TestTrackerLoopbackAndLimits(t *testing.T) {

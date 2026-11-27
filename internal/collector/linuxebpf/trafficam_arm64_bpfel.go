@@ -60,7 +60,8 @@ type trafficamUdpKey struct {
 	Raddr  [16]uint8
 	Rport  uint16
 	Family uint16
-	Pad    uint32
+	Lport  uint16
+	Pad    uint16
 }
 
 type trafficamUdpVal struct {
